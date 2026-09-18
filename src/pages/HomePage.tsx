@@ -1,20 +1,20 @@
 /**
- * HomePage — public landing page.
+ * HomePage - public landing page.
  *
- * Short factual product copy. No marketing claims. The service status
- * component (with backend URL detail) lives on a dedicated, non-public
- * surface; this page keeps the marketing copy clean.
+ * Short factual product copy. The detailed backend connectivity display
+ * lives in settings; this page shows only a compact status indicator.
  */
 
 import type { JSX } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { ServiceStatus } from '../components/ServiceStatus';
 
 export function HomePage(): JSX.Element {
   const { authenticated, userId, identity } = useAuth();
 
   return (
-    <div className="landing">
+    <div className="page page--content landing">
       <section className="landing__hero">
         <div>
           <span className="landing__eyebrow">Secure Messaging</span>
@@ -48,18 +48,9 @@ export function HomePage(): JSX.Element {
           )}
 
           <ul className="landing__meta" aria-label="Product properties">
-            <li>
-              <span aria-hidden="true">●</span>
-              End-to-end encrypted
-            </li>
-            <li>
-              <span aria-hidden="true">●</span>
-              On-device identity
-            </li>
-            <li>
-              <span aria-hidden="true">●</span>
-              Browser-based
-            </li>
+            <li>End-to-end encrypted</li>
+            <li>On-device identity</li>
+            <li>Browser-based</li>
           </ul>
         </div>
 
@@ -73,8 +64,8 @@ export function HomePage(): JSX.Element {
             Messages stay between you and the recipient.
           </h2>
           <p className="section-heading__subtitle">
-            Secure Messaging uses standard end-to-end encryption. The
-            server sees routing information only.
+            Secure Messaging uses standard end-to-end encryption. The server
+            sees routing information only.
           </p>
         </header>
 
@@ -137,6 +128,8 @@ export function HomePage(): JSX.Element {
           </li>
         </ol>
       </section>
+
+      <ServiceStatus />
 
       {authenticated ? (
         <section className="cta-banner" aria-labelledby="cta-heading">

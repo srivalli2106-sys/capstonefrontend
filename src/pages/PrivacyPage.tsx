@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 
 export function PrivacyPage(): JSX.Element {
   return (
-    <article className="page page--narrow content-page">
+    <article className="page page--legal content-page">
       <header className="content-page__header">
         <p className="content-page__eyebrow">Privacy</p>
         <h1>Privacy notice</h1>

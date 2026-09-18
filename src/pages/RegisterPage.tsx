@@ -17,6 +17,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ApiError } from '../api/http';
 import { authController, IdentityError } from '../auth/AuthController';
+import { AuthLayout } from '../components/AuthLayout';
 
 type Status =
   | { kind: 'idle' }
@@ -65,14 +66,12 @@ export function RegisterPage(): JSX.Element {
     passphrase !== passphraseConfirm;
 
   return (
-    <div className="page page--narrow">
+    <AuthLayout>
       <section className="auth-card" aria-labelledby="register-title">
         <h1 id="register-title" className="auth-card__title">Create account</h1>
         <p className="auth-card__lede">
-          Your identity is generated on this device. The private key never leaves
-          the browser; it is encrypted with a passphrase you choose and stored
-          locally in IndexedDB. There is no recovery: lose the passphrase and
-          lose the account.
+          Your identity is generated on this device and protected by a
+          passphrase you choose.
         </p>
 
         <hr className="auth-card__divider" />
@@ -106,7 +105,7 @@ export function RegisterPage(): JSX.Element {
           </label>
 
           <label className="form__field">
-            <span className="form__label">Identity passphrase</span>
+            <span className="form__label">Passphrase</span>
             <input
               className="form__input"
               type="password"
@@ -119,7 +118,9 @@ export function RegisterPage(): JSX.Element {
               disabled={submitting}
               placeholder="At least 8 characters"
             />
-            <small className="form__hint">At least 8 characters. Keep it safe.</small>
+            <small className="form__hint">
+              At least 8 characters. Lose it and the identity is unrecoverable.
+            </small>
           </label>
 
           <label className="form__field">
@@ -161,9 +162,9 @@ export function RegisterPage(): JSX.Element {
               disabled={disabled}
             >
               {status.kind === 'generating'
-                ? 'Generating identity…'
+                ? 'Generating identity...'
                 : status.kind === 'submitting'
-                  ? 'Submitting…'
+                  ? 'Submitting...'
                   : 'Register'}
             </button>
             <Link className="button button--ghost" to="/login">
@@ -176,7 +177,7 @@ export function RegisterPage(): JSX.Element {
           Already registered? <Link to="/login">Sign in</Link>.
         </p>
       </section>
-    </div>
+    </AuthLayout>
   );
 }
 

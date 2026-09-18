@@ -5,9 +5,9 @@
  *   1. User enters user_id + passphrase.
  *   2. The frontend decrypts the local Ed25519 seed (IndexedDB + PBKDF2 +
  *      AES-GCM).
- *   3. POST /auth/challenge → nonce.
+ *   3. POST /auth/challenge -> nonce.
  *   4. Sign the raw 32-byte nonce (NOT the hex string) with Ed25519.
- *   5. POST /auth/verify → JWT.
+ *   5. POST /auth/verify -> JWT.
  *
  * The user_id MUST match a local identity record. There is no account
  * recovery by design.
@@ -18,6 +18,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiError } from '../api/http';
 import { authController, IdentityError } from '../auth/AuthController';
+import { AuthLayout } from '../components/AuthLayout';
 
 type Status =
   | { kind: 'idle' }
@@ -58,18 +59,17 @@ export function LoginPage(): JSX.Element {
   const submitting = status.kind === 'unlocking' || status.kind === 'signing';
   const submitLabel =
     status.kind === 'unlocking'
-      ? 'Unlocking identity…'
+      ? 'Unlocking identity...'
       : status.kind === 'signing'
-        ? 'Signing challenge…'
+        ? 'Signing challenge...'
         : 'Sign in';
 
   return (
-    <div className="page page--narrow">
+    <AuthLayout>
       <section className="auth-card" aria-labelledby="login-title">
         <h1 id="login-title" className="auth-card__title">Sign in</h1>
         <p className="auth-card__lede">
-          Authentication uses a proof-of-possession signature over a server
-          challenge. Your signing key lives only on this device.
+          Sign in with your user identifier and local passphrase.
         </p>
 
         <hr className="auth-card__divider" />
@@ -101,7 +101,7 @@ export function LoginPage(): JSX.Element {
           </label>
 
           <label className="form__field">
-            <span className="form__label">Identity passphrase</span>
+            <span className="form__label">Passphrase</span>
             <input
               className="form__input"
               type="password"
@@ -114,7 +114,7 @@ export function LoginPage(): JSX.Element {
               placeholder="Your local passphrase"
             />
             <small className="form__hint">
-              Used to unlock the locally-stored Ed25519 private key.
+              Unlocks the identity key stored on this device.
             </small>
           </label>
 
@@ -147,7 +147,7 @@ export function LoginPage(): JSX.Element {
           New here? <Link to="/register">Create an account</Link>.
         </p>
       </section>
-    </div>
+    </AuthLayout>
   );
 }
 

@@ -105,7 +105,7 @@ export function SettingsPage(): JSX.Element {
         });
 
   return (
-    <div className="page">
+    <div className="page page--settings">
       <h1>Settings</h1>
       <p className="page__lede">
         Manage the local session and the device-stored encrypted identity.
