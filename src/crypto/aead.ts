@@ -95,3 +95,80 @@ export async function decrypt(
   );
   return new Uint8Array(plaintext);
 }
+
+// ---------------------------------------------------------------------------
+// Raw-key helpers (used by the Double Ratchet; the message key is one-shot
+// raw 32 bytes derived from the chain step).
+// ---------------------------------------------------------------------------
+
+async function importRawAesKey(rawKey: Uint8Array): Promise<CryptoKey> {
+  return globalThis.crypto.subtle.importKey(
+    'raw',
+    asBufferSource(rawKey),
+    { name: 'AES-GCM' },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+/**
+ * AES-GCM encrypt with a raw 32-byte key + caller-supplied 12-byte nonce.
+ * Returns the raw ciphertext (which already includes the 16-byte tag at the end).
+ */
+export async function encryptWithRawKey(
+  rawKey: Uint8Array,
+  plaintext: Uint8Array,
+  nonce: Uint8Array,
+  ad: Uint8Array,
+): Promise<Uint8Array> {
+  if (rawKey.length !== AES_KEY_BYTES) {
+    throw new Error('AES key must be 32 bytes');
+  }
+  if (nonce.length !== AES_IV_BYTES) {
+    throw new Error('AES-GCM nonce must be 12 bytes');
+  }
+  const key = await importRawAesKey(rawKey);
+  const params: AesGcmParams = {
+    name: 'AES-GCM',
+    iv: asBufferSource(nonce),
+    additionalData: asBufferSource(ad),
+    tagLength: 128,
+  };
+  const ct = await globalThis.crypto.subtle.encrypt(
+    params,
+    key,
+    asBufferSource(plaintext),
+  );
+  return new Uint8Array(ct);
+}
+
+/**
+ * AES-GCM decrypt with a raw 32-byte key + caller-supplied 12-byte nonce.
+ * Throws if the AEAD tag does not verify.
+ */
+export async function decryptWithRawKey(
+  rawKey: Uint8Array,
+  ciphertext: Uint8Array,
+  nonce: Uint8Array,
+  ad: Uint8Array,
+): Promise<Uint8Array> {
+  if (rawKey.length !== AES_KEY_BYTES) {
+    throw new Error('AES key must be 32 bytes');
+  }
+  if (nonce.length !== AES_IV_BYTES) {
+    throw new Error('AES-GCM nonce must be 12 bytes');
+  }
+  const key = await importRawAesKey(rawKey);
+  const params: AesGcmParams = {
+    name: 'AES-GCM',
+    iv: asBufferSource(nonce),
+    additionalData: asBufferSource(ad),
+    tagLength: 128,
+  };
+  const pt = await globalThis.crypto.subtle.decrypt(
+    params,
+    key,
+    asBufferSource(ciphertext),
+  );
+  return new Uint8Array(pt);
+}

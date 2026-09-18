@@ -76,6 +76,7 @@ export interface X3dhInitiationResult {
   initPayload: Uint8Array;
   opkIndex: number | null;
   ephemeralPublicKey: Uint8Array;
+  ephemeralPrivateKey: Uint8Array;
   /** Pre-HKDF concatenation of the DH terms (exposed for tests). */
   dhPartsConcat: Uint8Array;
 }
@@ -158,6 +159,7 @@ export async function x3dhInitiate(
     initPayload: buildInitPayload(ikxAPub, ekAPub, opkIndex),
     opkIndex,
     ephemeralPublicKey: ekAPub,
+    ephemeralPrivateKey: ekPriv,
     dhPartsConcat,
   };
 }
