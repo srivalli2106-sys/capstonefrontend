@@ -2,11 +2,14 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from '../components/AppShell';
 import { RequireAuth } from '../components/RequireAuth';
 import { ChatPage } from '../pages/ChatPage';
+import { ContactPage } from '../pages/ContactPage';
 import { HomePage } from '../pages/HomePage';
 import { LoginPage } from '../pages/LoginPage';
 import { NotFoundPage } from '../pages/NotFoundPage';
+import { PrivacyPage } from '../pages/PrivacyPage';
 import { RegisterPage } from '../pages/RegisterPage';
 import { SettingsPage } from '../pages/SettingsPage';
+import { TermsPage } from '../pages/TermsPage';
 
 export function AppRouter(): JSX.Element {
   return (
@@ -15,6 +18,9 @@ export function AppRouter(): JSX.Element {
         <Route index element={<HomePage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/terms" element={<TermsPage />} />
+        <Route path="/contact" element={<ContactPage />} />
 
         <Route
           path="/chat"

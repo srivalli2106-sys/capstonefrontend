@@ -1,10 +1,8 @@
 /**
  * AppShell — application chrome.
  *
- * Renders the top navigation, the routed page content (via <Outlet />), and a
- * structured footer with product, security, privacy, and placeholder legal
- * links. The navbar adapts on small screens: protected links collapse behind
- * a back/menu affordance.
+ * Renders the top navigation, the routed page content (via <Outlet />), and
+ * the site footer. The navbar adapts on small screens.
  */
 
 import type { JSX } from 'react';
@@ -97,8 +95,7 @@ export function AppShell(): JSX.Element {
           <div className="app-footer__brand">
             <Logo size={24} />
             <p className="app-footer__tagline">
-              End-to-end encrypted, one-to-one messaging with on-device identity.
-              Built on open cryptographic standards.
+              Private one-to-one messaging built with end-to-end encryption.
             </p>
           </div>
 
@@ -116,25 +113,25 @@ export function AppShell(): JSX.Element {
             <ul>
               <li><span className="muted">End-to-end encryption</span></li>
               <li><span className="muted">On-device identity keys</span></li>
-              <li><span className="muted">Forward secrecy</span></li>
+              <li><span className="muted">Forward-secret sessions</span></li>
             </ul>
           </div>
 
           <div className="app-footer__col">
-            <h4>Legal &amp; support</h4>
+            <h4>Support</h4>
             <ul>
-              <li><span className="muted">Privacy — placeholder</span></li>
-              <li><span className="muted">Terms — placeholder</span></li>
-              <li><Link to="/404">Contact</Link></li>
+              <li><Link to="/contact">Contact</Link></li>
+              <li><Link to="/privacy">Privacy</Link></li>
+              <li><Link to="/terms">Terms</Link></li>
             </ul>
           </div>
         </div>
 
         <div className="app-footer__bottom">
-          <span>© {new Date().getFullYear()} Secure Messaging</span>
+          <span>© 2026 Secure Messaging. All rights reserved.</span>
           <span className="app-footer__tagline">
-            Cryptography is only as strong as its implementation. This product
-            uses audited primitives.
+            Cryptography is implemented in this client; the server only
+            relays ciphertext.
           </span>
         </div>
       </footer>
