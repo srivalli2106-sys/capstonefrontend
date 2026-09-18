@@ -179,9 +179,10 @@ interface Conversation {
   sessionState: SessionState;
   messages: DisplayMessage[];
   lastActivityAt: number;
-  /** True once we've attempted to send at least one message and the
-   *  session establishment is in flight. */
+  /** True while the X3DH session establishment is in flight. */
   initiating: boolean;
+  /** True while an outbound send is in progress (prevents double-sends). */
+  sending: boolean;
 }
 
 export class ChatController {
@@ -195,12 +196,18 @@ export class ChatController {
   private readonly textEncoder = new TextEncoder();
   /** Monotonic ids for messages we put on the wire. */
   private readonly outboundMessageIds: Set<string> = new Set();
+  /** Dedup: envelope ids already processed (bounded ring). */
+  private readonly receivedMessageIds: Set<string> = new Set();
+  private static readonly MAX_RECEIVED_IDS = 2048;
 
   constructor(options: ChatControllerOptions) {
     this.authController = options.authController;
     this.webSocket = options.webSocketController;
     this.unsubscribeAuth = this.authController.subscribe((snap) => {
-      if (!snap.authenticated) {
+      // Clear sensitive in-memory sessions on logout OR identity lock.
+      // Spec §9 / §13: logout/lock must wipe material and clear state.
+      const identity = (snap as { identity?: { kind: string } }).identity;
+      if (!snap.authenticated || (identity !== undefined && identity.kind === 'locked')) {
         this.clearAllSessions();
       }
       this.notify();
@@ -315,6 +322,10 @@ export class ChatController {
     if (trimmed.length === 0) {
       throw encodeChatError('send_failed', 'Empty messages are not sent.');
     }
+    if (conv.sending) {
+      throw encodeChatError('send_failed', 'A message is already being sent. Please wait.');
+    }
+    conv.sending = true;
     const id = newOutboundId();
     this.outboundMessageIds.add(id);
     const createdAt = Date.now();
@@ -354,6 +365,8 @@ export class ChatController {
         kind: 'error',
         error: chatErrorFromUnknown(err, 'send_failed'),
       };
+    } finally {
+      conv.sending = false;
     }
     this.notify();
     return outbound;
@@ -468,6 +481,10 @@ export class ChatController {
   }
 
   private async handleSessionInit(env: InboundEnvelope): Promise<void> {
+    // Dedup: skip if this envelope was already processed.
+    if (this.receivedMessageIds.has(env.id)) return;
+    this.receivedMessageIds.add(env.id);
+
     const identity = this.authController.getUnlockedIdentity();
     if (identity === null || identity.deviceKeys === null) {
       this.recordSessionError(
@@ -525,6 +542,9 @@ export class ChatController {
   }
 
   private handleSessionAccept(env: InboundEnvelope): void {
+    if (this.receivedMessageIds.has(env.id)) return;
+    this.receivedMessageIds.add(env.id);
+
     const conv = this.conversations.get(env.sender);
     if (conv === undefined) return;
     conv.lastActivityAt = Date.now();
@@ -535,6 +555,17 @@ export class ChatController {
   }
 
   private async handleText(env: InboundEnvelope): Promise<void> {
+    // Dedup: skip if this envelope was already processed.
+    if (this.receivedMessageIds.has(env.id)) return;
+    this.receivedMessageIds.add(env.id);
+    if (this.receivedMessageIds.size > ChatController.MAX_RECEIVED_IDS) {
+      const ids = Array.from(this.receivedMessageIds);
+      this.receivedMessageIds.clear();
+      for (const id of ids.slice(-ChatController.MAX_RECEIVED_IDS / 2)) {
+        this.receivedMessageIds.add(id);
+      }
+    }
+
     const conv = this.ensureConversation(env.sender);
     conv.lastActivityAt = Date.now();
     if (conv.session === null) {
@@ -607,6 +638,7 @@ export class ChatController {
         messages: [],
         lastActivityAt: Date.now(),
         initiating: false,
+        sending: false,
       };
       this.conversations.set(peerUserId, conv);
     }
@@ -624,6 +656,8 @@ export class ChatController {
       }
     }
     this.conversations.clear();
+    this.outboundMessageIds.clear();
+    this.receivedMessageIds.clear();
   }
 
   private toSnapshot(conv: Conversation): ConversationSnapshot {

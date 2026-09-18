@@ -75,11 +75,19 @@ export class WebSocketController {
       create: (url) => new globalThis.WebSocket(url) as unknown as WebSocketLike,
     };
     this.backoff = options.backoffSchedule ?? DEFAULT_BACKOFF;
-    this.unsubscribeAuth = this.authController.subscribe((auth: { authenticated: boolean }) => {
-      if (!auth.authenticated) {
-        this.disconnect('logout');
-      }
-    });
+    this.unsubscribeAuth = this.authController.subscribe(
+      (snap: { authenticated: boolean; identity?: { kind: string } }) => {
+        if (!snap.authenticated) {
+          this.disconnect('logout');
+          return;
+        }
+        // Spec §9: identity lock must disconnect transport and disable reconnect.
+        const identity = (snap as { identity?: { kind: string } }).identity;
+        if (identity !== undefined && identity.kind === 'locked') {
+          this.disconnect('lock');
+        }
+      },
+    );
   }
 
 

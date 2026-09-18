@@ -41,6 +41,7 @@ export function ChatPage(): JSX.Element {
   const [activePeer, setActivePeer] = useState<string | null>(null);
   const [composer, setComposer] = useState('');
   const [sendError, setSendError] = useState<string | null>(null);
+  const [opening, setOpening] = useState(false);
 
   // Resolve the active ChatController once setup has run.
   const ctrl: ChatController | null = useMemo(() => {
@@ -78,12 +79,15 @@ export function ChatPage(): JSX.Element {
       if (peer.length < 3 || peer.length > 64) return;
       if (peer === userId) return;
       setSendError(null);
+      setOpening(true);
       setActivePeer(peer);
-      if (ctrl === null) return;
+      if (ctrl === null) { setOpening(false); return; }
       try {
         await ctrl.openConversation(peer);
       } catch (err) {
         setSendError(safeErrorMessage(err, 'Could not open conversation.'));
+      } finally {
+        setOpening(false);
       }
     },
     [targetInput, ctrl, userId],
@@ -116,6 +120,19 @@ export function ChatPage(): JSX.Element {
     setActivePeer(null);
   }, [activePeer, ctrl]);
 
+  const handleRetry = useCallback(
+    async (peerUserId: string, failedPlaintext: string) => {
+      if (ctrl === null) return;
+      setSendError(null);
+      try {
+        await ctrl.sendText(peerUserId, failedPlaintext);
+      } catch (err) {
+        setSendError(safeErrorMessage(err, 'Retry failed.'));
+      }
+    },
+    [ctrl],
+  );
+
   // Identify / lock state.
   const identityLocked = identity.kind !== 'unlocked';
 
@@ -147,10 +164,10 @@ export function ChatPage(): JSX.Element {
                   <button
                     type="submit"
                     className="button button--primary"
-                    disabled={targetInput.trim().length < 3 || identityLocked || ctrl === null}
+                    disabled={targetInput.trim().length < 3 || identityLocked || ctrl === null || opening}
                     data-testid="open-conversation"
                   >
-                    Open
+                    {opening ? 'Opening…' : 'Open'}
                   </button>
                 </div>
               </label>
@@ -223,6 +240,7 @@ export function ChatPage(): JSX.Element {
             <MessageList
               conversation={activeConversation}
               selfUserId={userId}
+              onRetry={handleRetry}
             />
 
             {activeConversation?.session.kind === 'error' && (
@@ -303,9 +321,11 @@ export function ChatPage(): JSX.Element {
 function MessageList({
   conversation,
   selfUserId,
+  onRetry,
 }: {
   conversation: ConversationSnapshot | null;
   selfUserId: string | null;
+  onRetry?: (peerUserId: string, plaintext: string) => void;
 }): JSX.Element {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -328,7 +348,7 @@ function MessageList({
       ) : (
         <ul className="chat-message-list">
           {conversation.messages.map((m) => (
-            <MessageBubble key={m.id} message={m} selfUserId={selfUserId} />
+            <MessageBubble key={m.id} message={m} selfUserId={selfUserId} onRetry={onRetry} />
           ))}
         </ul>
       )}
@@ -339,9 +359,11 @@ function MessageList({
 function MessageBubble({
   message,
   selfUserId,
+  onRetry,
 }: {
   message: DisplayMessage;
   selfUserId: string | null;
+  onRetry?: (peerUserId: string, plaintext: string) => void;
 }): JSX.Element {
   const outgoing = message.outgoing || (selfUserId !== null && message.senderUserId === selfUserId);
   const time = new Date(message.createdAt).toLocaleTimeString(undefined, {
@@ -365,7 +387,21 @@ function MessageBubble({
             {' · '}
             {message.status === 'sending' && 'sending…'}
             {message.status === 'sent' && 'sent'}
-            {message.status === 'failed' && `send failed${message.errorMessage ? `: ${message.errorMessage}` : ''}`}
+            {message.status === 'failed' && (
+              <>
+                {'send failed'}
+                {onRetry && (
+                  <button
+                    type="button"
+                    className="button button--link"
+                    onClick={() => onRetry(message.recipientUserId, message.plaintext)}
+                    data-testid="retry-button"
+                  >
+                    {' retry'}
+                  </button>
+                )}
+              </>
+            )}
           </span>
         )}
       </div>
@@ -387,7 +423,9 @@ function labelForSession(state: SessionState): string {
     case 'ready':
       return 'End-to-end encrypted';
     case 'error':
-      return 'Session error';
+      return state.error.code === 'backend_blocker'
+        ? 'Backend blocker'
+        : 'Session error';
   }
 }
 
