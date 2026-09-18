@@ -8,16 +8,11 @@
  * `server/services/key_service.py`):
  *
  *   - `ik_public`   : 32-byte Ed25519 auth public (64-hex)
+ *   - `xdh_public`  : 32-byte X25519 X3DH identity IKX (64-hex)
  *   - `spk_public`  : 32-byte X25519 signed prekey (64-hex)
- *   - `spk_sig`     : hex signature (see note below)
+ *   - `spk_sig`     : 64-byte Ed25519 signature (128-hex)
  *   - `opk_public`  : 32-byte X25519 OPK (64-hex) or null; single-use
  *   - `version`     : int, bumped on every upload
- *
- * The public X3DH identity (`IKX` / `xdh_public`) is NOT part of the REST
- * bundle — verified against source and documented in backend docs/E2EE.md
- * §2 ("the client layer must supply/carry it out-of-band"). We therefore
- * model it as an explicit `ikx_publicHex: null` on the remote bundle rather
- * than silently defaulting it.
  */
 
 import { hexToBytes } from './hex';
@@ -43,14 +38,15 @@ export class KeyBundleError extends Error {
 
 /**
  * A validated remote peer key bundle, derived from the REST response.
- * `ikxPublicHex` is the X3DH identity the backend does not serve (out-of-band).
+ * `ikxPublicHex` is the peer's X25519 X3DH identity (IKX) served by the
+ * backend as `xdh_public`.
  */
 export interface RemoteKeyBundle {
   userId: string;
   /** Ed25519 auth identity (64-hex) — verifies the SPK signature. */
   ikPublicHex: string;
-  /** X25519 X3DH identity (64-hex), served OUT-OF-BAND (absent from REST). */
-  ikxPublicHex: string | null;
+  /** X25519 X3DH identity (64-hex). */
+  ikxPublicHex: string;
   /** X25519 signed prekey (64-hex). */
   spkPublicHex: string;
   /** SPK signature hex (protocol format: 128 hex / 64 bytes). */
@@ -74,6 +70,7 @@ export function parseRemoteKeyBundle(response: KeyBundleResponse): RemoteKeyBund
   }
 
   const ikPublicHex = requireHex(response.ik_public, 'ik_public', ED25519_PUBLIC_HEX_LENGTH);
+  const ikxPublicHex = requireHex(response.xdh_public, 'xdh_public', X25519_PUBLIC_HEX_LENGTH);
   const spkPublicHex = requireHex(response.spk_public, 'spk_public', X25519_PUBLIC_HEX_LENGTH);
   const spkSignatureHex = requireHex(response.spk_sig, 'spk_sig', SPK_SIGNATURE_HEX_LENGTH);
 
@@ -98,7 +95,7 @@ export function parseRemoteKeyBundle(response: KeyBundleResponse): RemoteKeyBund
   return {
     userId,
     ikPublicHex,
-    ikxPublicHex: null, // never served by this backend (out-of-band)
+    ikxPublicHex,
     spkPublicHex,
     spkSignatureHex,
     opkPublicHex,

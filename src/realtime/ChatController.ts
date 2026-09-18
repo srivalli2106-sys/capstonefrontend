@@ -432,7 +432,7 @@ export class ChatController {
         deviceKeys.ikxPrivate,
         {
           authIkPublic: hexToBytes(remote.ikPublicHex),
-          ikxPublic: remote.ikxPublicHex === null ? null : hexToBytes(remote.ikxPublicHex),
+          ikxPublic: hexToBytes(remote.ikxPublicHex),
           spkPublic: hexToBytes(remote.spkPublicHex),
           spkSignature: hexToBytes(remote.spkSignatureHex),
           opkPublic: remote.opkPublicHex === null ? null : hexToBytes(remote.opkPublicHex),

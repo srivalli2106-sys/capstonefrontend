@@ -55,6 +55,7 @@ function keyBundleResponse(): KeyBundleResponse {
   return {
     user_id: 'alice',
     ik_public: hex.ik_public as string,
+    xdh_public: hex.xdh_public as string,
     spk_public: hex.spk_public as string,
     spk_sig: hex.spk_signature as string,
     opk_public: opkPublicHex,
@@ -79,11 +80,10 @@ describe('GET /keys/bundle', () => {
     const parsed = parseRemoteKeyBundle(data);
     expect(parsed.userId).toBe('alice');
     expect(parsed.ikPublicHex).toBe(keyBundleResponse().ik_public);
+    // The served X3DH X25519 identity (IKX) is read from xdh_public.
+    expect(parsed.ikxPublicHex).toBe(keyBundleResponse().xdh_public);
     expect(parsed.spkPublicHex).toBe(keyBundleResponse().spk_public);
     expect(parsed.opkPublicHex).toBe(keyBundleResponse().opk_public);
-    // The backend contract never carries the X25519 IKX identity; modeled
-    // explicitly instead of silently defaulting.
-    expect(parsed.ikxPublicHex).toBeNull();
   });
 
   it('rejects a bundle whose SPK signature does not verify', async () => {
@@ -140,6 +140,7 @@ describe('POST /keys/upload', () => {
     const { hex, opkPublicHex } = bobBundle();
     await uploadKeyBundle(
       {
+        xdh_public: hex.xdh_public as string,
         spk_public: hex.spk_public as string,
         spk_sig: hex.spk_signature as string,
         opk_public: opkPublicHex,
@@ -158,10 +159,12 @@ describe('POST /keys/upload', () => {
       'opk_public',
       'spk_public',
       'spk_sig',
+      'xdh_public',
     ]);
     expect(typeof body.spk_public).toBe('string');
     expect(typeof body.spk_sig).toBe('string');
     expect(typeof body.opk_public).toBe('string');
+    expect(typeof body.xdh_public).toBe('string');
 
     // The wire body must contain NO private scalars.
     const asText = JSON.stringify(body);
@@ -175,7 +178,12 @@ describe('POST /keys/upload', () => {
     const fn = mockFetchOnce(200, { status: 'ok', user_id: 'alice' });
     const { hex } = bobBundle();
     await uploadKeyBundle(
-      { spk_public: hex.spk_public as string, spk_sig: hex.spk_signature as string, opk_public: null },
+      {
+        xdh_public: hex.xdh_public as string,
+        spk_public: hex.spk_public as string,
+        spk_sig: hex.spk_signature as string,
+        opk_public: null,
+      },
       { authToken: TOKEN },
     );
     const [, init] = fn.mock.calls[0] as [string, RequestInit];

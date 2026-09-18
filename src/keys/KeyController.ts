@@ -2,37 +2,31 @@
  * KeyController — frontend key-lifecycle orchestration (Phase 4).
  *
  * Depends on the unlocked identity held by `AuthController`. It does NOT
- * re-derive secrets and never touches the backend itself; API calls live in
- * `src/api/keys.ts` and are driven by callers that hold the JWT.
+ * re-derive secrets; the API call itself lives in `src/api/keys.ts` and is
+ * driven here with the current JWT.
  *
  * Status model:
  *   - not_provisioned  : no local X25519 device key material yet.
  *   - ready            : device keys exist locally (IKX/SPK/OPK publics
- *                        derivable); nothing has been uploaded.
- *   - upload_blocked   : everything local is ready but the current backend
- *                        `/keys/upload` contract cannot carry a valid SPK
- *                        signature (see `UPLOAD_BLOCK_REASON`), so no bundle
- *                        is pushed. This is a frontend-side report of a
- *                        backend contract gap, NOT a silent workaround.
+ *                        derivable) and the bundle upload has been
+ *                        attempted against the backend when the identity
+ *                        is unlocked and a JWT is held.
+ *
+ * When the identity becomes unlocked (register/login/unlock) the current
+ * user's key bundle is uploaded so peers can fetch it during X3DH session
+ * establishment. Upload failures are best-effort and never block auth or
+ * chat UI.
  *
  * Private scalars never leave the JS heap and are dropped on identity lock.
  */
 
 import { authController } from '../auth/AuthController';
+import { uploadKeyBundle } from '../api/keys';
 import {
   buildDevicePublicBundle,
   devicePublicBundleToHex,
 } from '../crypto/deviceKeys';
 import type { UnlockedIdentity } from '../crypto/identity';
-
-/**
- * Actual Ed25519 signatures are 64 bytes = 128 hex chars, but
- * `server/routes/keys.py UploadKeyBundleRequest._MAX_KEY_HEX_LENGTH` caps
- * `spk_sig` at 64 hex chars. A real signed prekey can therefore not be
- * uploaded under the current contract. Reported, not worked around.
- */
-export const UPLOAD_BLOCK_REASON =
-  'Backend /keys/upload caps spk_sig at 64 hex chars, but the E2EE protocol requires a real Ed25519 signature (128 hex). No bundle can be uploaded without weakening the SPK binding.';
 
 export interface LocalKeyInfo {
   userId: string;
@@ -50,13 +44,14 @@ export interface LocalKeyInfo {
 
 export type KeyStatus =
   | { kind: 'not_provisioned' }
-  | { kind: 'ready'; local: LocalKeyInfo }
-  | { kind: 'upload_blocked'; local: LocalKeyInfo; reason: string };
+  | { kind: 'ready'; local: LocalKeyInfo };
 
 type Listener = (status: KeyStatus) => void;
 
 class KeyControllerImpl {
   private listeners: Set<Listener> = new Set();
+  /** Guards against overlapping uploads for the same unlocked identity. */
+  private uploading = false;
 
   getStatus(): KeyStatus {
     const identity = authController.getUnlockedIdentity();
@@ -67,8 +62,7 @@ class KeyControllerImpl {
     if (local === null) {
       return { kind: 'not_provisioned' };
     }
-    // The bundle can be BUILT, but a real signature cannot be uploaded.
-    return { kind: 'upload_blocked', local, reason: UPLOAD_BLOCK_REASON };
+    return { kind: 'ready', local };
   }
 
   subscribe(listener: Listener): () => void {
@@ -78,8 +72,52 @@ class KeyControllerImpl {
     };
   }
 
+  /**
+   * Upload the current unlocked identity's public key bundle to the backend
+   * so peers can fetch it when establishing an X3DH session. Best-effort:
+   * failures are logged to console only and surface as a `ready` status so
+   * they never block auth or chat.
+   */
+  async ensureBundleUploaded(): Promise<void> {
+    const status = this.getStatus();
+    if (status.kind !== 'ready' || this.uploading) {
+      return;
+    }
+    const token = authController.getToken();
+    if (token === null) {
+      return;
+    }
+    const { local } = status;
+    this.uploading = true;
+    try {
+      await uploadKeyBundle(
+        {
+          xdh_public: local.ikxPublicHex,
+          spk_public: local.spkPublicHex,
+          spk_sig: local.spkSignatureHex,
+          opk_public: local.opkPublicHex,
+        },
+        { authToken: token },
+      );
+    } catch (err) {
+      // Best-effort upload: do not block the UI on transient backend issues.
+      // eslint-disable-next-line no-console
+      console.warn('Key bundle upload failed:', err instanceof Error ? err.message : err);
+    } finally {
+      this.uploading = false;
+    }
+  }
+
   /** Re-fan-out the current status (e.g. after the auth identity changed). */
   refresh(): void {
+    // When the identity is freshly unlocked, publish the bundle so peers can
+    // fetch it. Guarded by the `uploading` flag inside ensureBundleUploaded.
+    if (
+      authController.getUnlockedIdentity() !== null &&
+      authController.getToken() !== null
+    ) {
+      void this.ensureBundleUploaded();
+    }
     this.notify();
   }
 
@@ -120,7 +158,8 @@ export function buildLocalKeyInfo(
 
 export const keyController = new KeyControllerImpl();
 
-// Re-emit status whenever the auth identity changes (lock/unlock/login/logout).
+// Re-emit status and attempt bundle upload whenever the auth identity
+// changes (lock/unlock/login/logout).
 authController.subscribe(() => {
   keyController.refresh();
 });

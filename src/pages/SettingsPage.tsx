@@ -1,14 +1,12 @@
 /**
  * Settings page.
  *
- * Surfaces existing-only state:
+ * Surfaces existing-only state in user-facing terms:
  *  - JWT session info (user_id, expiry).
- *  - Local identity info (public key short id, locked/unlocked).
- *  - Lock identity (drops the in-memory seed; JWT untouched).
- *  - Unlock identity (asks for passphrase; only available when the JWT
- *    user_id matches the stored local identity).
- *  - Sign out (revokes the JWT via /auth/logout, clears session, locks
- *    identity, optionally wipes the local record on explicit confirmation).
+ *  - Local identity status (locked/unlocked).
+ *  - Lock / unlock / wipe / sign-out actions.
+ *
+ * No raw or truncated cryptographic key material is displayed.
  */
 
 import type { FormEvent, JSX } from 'react';
@@ -17,7 +15,6 @@ import { useNavigate } from 'react-router-dom';
 import { ApiError } from '../api/http';
 import { authController } from '../auth/AuthController';
 import { useAuth } from '../hooks/useAuth';
-import { useKeyStatus } from '../hooks/useKeyStatus';
 
 type Action =
   | { kind: 'idle' }
@@ -28,7 +25,6 @@ type Action =
 
 export function SettingsPage(): JSX.Element {
   const { authenticated, userId, exp, identity } = useAuth();
-  const keyStatus = useKeyStatus();
   const navigate = useNavigate();
   const [action, setAction] = useState<Action>({ kind: 'idle' });
   const [error, setError] = useState<{ message: string; requestId: string | null } | null>(null);
@@ -115,7 +111,7 @@ export function SettingsPage(): JSX.Element {
         <header className="card__header">
           <div>
             <h2 id="settings-session" className="card__title">Session</h2>
-            <p className="card__subtitle">Backend authentication token currently held by this device.</p>
+            <p className="card__subtitle">Authentication token currently held by this device.</p>
           </div>
         </header>
         <dl className="settings-list">
@@ -142,75 +138,20 @@ export function SettingsPage(): JSX.Element {
         <header className="card__header">
           <div>
             <h2 id="settings-identity" className="card__title">Identity</h2>
-            <p className="card__subtitle">Local cryptographic identity, stored encrypted in IndexedDB.</p>
+            <p className="card__subtitle">Your cryptographic identity, stored encrypted on this device.</p>
           </div>
         </header>
         <dl className="settings-list">
           <div className="settings-list__row">
-            <dt>Status</dt>
+            <dt>Identity key</dt>
             <dd>
-              <span className={
-                'pill ' +
-                (identity.kind === 'unlocked' ? 'pill--success' :
-                 identity.kind === 'locked' ? 'pill--warning' : '')
-              }>
-                {identityLabel(identity)}
+              <span className={'pill ' + (identity.kind === 'unlocked' ? 'pill--success' : 'pill--warning')}>
+                {identity.kind === 'unlocked' ? 'Stored securely on this device' : 'Locked'}
               </span>
             </dd>
           </div>
-          {identity.kind !== 'none' && (
-            <div className="settings-list__row">
-              <dt>Identity key</dt>
-              <dd>
-                <code>{identity.publicKeyShortId}…</code>
-                <span className="settings-list__meta">
-                  {' '}(first 12 hex chars; full key is held only in memory)
-                </span>
-              </dd>
-            </div>
-          )}
         </dl>
       </section>
-
-      {identity.kind === 'unlocked' && (
-        <section className="card" style={{ marginTop: 'var(--space-5)' }} aria-labelledby="settings-keys">
-          <header className="card__header">
-            <div>
-              <h2 id="settings-keys" className="card__title">X3DH key bundle</h2>
-              <p className="card__subtitle">Short identifiers of the X25519 keys used to establish sessions.</p>
-            </div>
-          </header>
-          {keyStatus.kind === 'not_provisioned' ? (
-            <p className="muted" style={{ marginTop: 'var(--space-3)' }}>No X25519 device key material yet.</p>
-          ) : (
-            <>
-              <dl className="settings-list">
-                <div className="settings-list__row">
-                  <dt>IKX (X3DH identity)</dt>
-                  <dd><code>{keyStatus.local.ikxPublicHex.slice(0, 12)}…</code></dd>
-                </div>
-                <div className="settings-list__row">
-                  <dt>SPK (signed prekey)</dt>
-                  <dd><code>{keyStatus.local.spkPublicHex.slice(0, 12)}…</code></dd>
-                </div>
-                <div className="settings-list__row">
-                  <dt>OPK (one-time prekey)</dt>
-                  <dd>
-                    {keyStatus.local.opkPublicHex === null
-                      ? <span className="muted">none</span>
-                      : <code>{keyStatus.local.opkPublicHex.slice(0, 12)}…</code>}
-                  </dd>
-                </div>
-              </dl>
-              {keyStatus.kind === 'upload_blocked' && (
-                <div className="form__error" role="alert" style={{ marginTop: 'var(--space-4)' }}>
-                  <span>{keyStatus.reason}</span>
-                </div>
-              )}
-            </>
-          )}
-        </section>
-      )}
 
       {error !== null && (
         <div className="form__error" role="alert" style={{ marginTop: 'var(--space-5)' }}>
@@ -294,17 +235,4 @@ export function SettingsPage(): JSX.Element {
       </p>
     </div>
   );
-}
-
-function identityLabel(
-  identity: ReturnType<typeof useAuth>['identity'],
-): string {
-  switch (identity.kind) {
-    case 'none':
-      return 'no local identity';
-    case 'locked':
-      return `locked (user ${identity.userId})`;
-    case 'unlocked':
-      return `unlocked (user ${identity.userId})`;
-  }
 }

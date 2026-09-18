@@ -1,12 +1,14 @@
 /**
  * AppShell — application chrome.
  *
- * Renders the top navigation, the routed page content (via <Outlet />), and
- * the site footer. The navbar adapts on small screens.
+ * Renders the top navigation and the routed page content (via <Outlet />).
+ * The marketing footer is rendered for content/legal/landing pages, but
+ * hidden for the in-app workspace routes (/chat, /settings) so the
+ * application shell fits the viewport and feels like a real product.
  */
 
 import type { JSX } from 'react';
-import { Link, NavLink, Outlet } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { Logo } from './Logo';
 
@@ -22,8 +24,20 @@ const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { to: '/settings', label: 'Settings', protected: true },
 ];
 
+/**
+ * Routes that opt out of the marketing footer and behave as full-viewport
+ * application workspaces. Keep this list tight and obvious.
+ */
+const APP_ROUTES: ReadonlyArray<string> = ['/chat', '/settings'];
+
 export function AppShell(): JSX.Element {
   const { authenticated, userId, identity } = useAuth();
+  const location = useLocation();
+
+  const isAppRoute = APP_ROUTES.some(
+    (prefix) =>
+      location.pathname === prefix || location.pathname.startsWith(`${prefix}/`),
+  );
 
   const identityBadge =
     identity.kind === 'unlocked'
@@ -33,7 +47,7 @@ export function AppShell(): JSX.Element {
         : 'no id';
 
   return (
-    <div className="app-shell">
+    <div className={'app-shell' + (isAppRoute ? ' app-shell--app' : '')}>
       <header className="app-header" role="banner">
         <div className="app-header__inner">
           <Link to="/" className="app-header__brand" aria-label="Secure Messaging home">
@@ -88,57 +102,62 @@ export function AppShell(): JSX.Element {
         </div>
       </header>
 
-      <main className="app-main" id="main-content">
+      <main
+        className={'app-main' + (isAppRoute ? ' app-main--app' : '')}
+        id="main-content"
+      >
         <div className="app-main__inner">
           <Outlet />
         </div>
       </main>
 
-      <footer className="app-footer" role="contentinfo">
-        <div className="app-footer__inner">
-          <div className="app-footer__brand">
-            <Logo size={24} />
-            <p className="app-footer__tagline">
-              Private one-to-one messaging built with end-to-end encryption.
-            </p>
+      {!isAppRoute && (
+        <footer className="app-footer" role="contentinfo">
+          <div className="app-footer__inner">
+            <div className="app-footer__brand">
+              <Logo size={24} />
+              <p className="app-footer__tagline">
+                Private one-to-one messaging built with end-to-end encryption.
+              </p>
+            </div>
+
+            <div className="app-footer__col">
+              <h4>Product</h4>
+              <ul>
+                <li><Link to="/chat">Chat</Link></li>
+                <li><Link to="/settings">Settings</Link></li>
+                <li><Link to="/">Overview</Link></li>
+              </ul>
+            </div>
+
+            <div className="app-footer__col">
+              <h4>Security</h4>
+              <ul>
+                <li><span className="muted">End-to-end encryption</span></li>
+                <li><span className="muted">On-device identity keys</span></li>
+                <li><span className="muted">Forward-secret sessions</span></li>
+              </ul>
+            </div>
+
+            <div className="app-footer__col">
+              <h4>Support</h4>
+              <ul>
+                <li><Link to="/contact">Contact</Link></li>
+                <li><Link to="/privacy">Privacy</Link></li>
+                <li><Link to="/terms">Terms</Link></li>
+              </ul>
+            </div>
           </div>
 
-          <div className="app-footer__col">
-            <h4>Product</h4>
-            <ul>
-              <li><Link to="/chat">Chat</Link></li>
-              <li><Link to="/settings">Settings</Link></li>
-              <li><Link to="/">Overview</Link></li>
-            </ul>
+          <div className="app-footer__bottom">
+            <span>© 2026 Secure Messaging. All rights reserved.</span>
+            <span className="app-footer__tagline">
+              Cryptography runs in the browser; the server only relays
+              ciphertext.
+            </span>
           </div>
-
-          <div className="app-footer__col">
-            <h4>Security</h4>
-            <ul>
-              <li><span className="muted">End-to-end encryption</span></li>
-              <li><span className="muted">On-device identity keys</span></li>
-              <li><span className="muted">Forward-secret sessions</span></li>
-            </ul>
-          </div>
-
-          <div className="app-footer__col">
-            <h4>Support</h4>
-            <ul>
-              <li><Link to="/contact">Contact</Link></li>
-              <li><Link to="/privacy">Privacy</Link></li>
-              <li><Link to="/terms">Terms</Link></li>
-            </ul>
-          </div>
-        </div>
-
-        <div className="app-footer__bottom">
-          <span>© 2026 Secure Messaging. All rights reserved.</span>
-          <span className="app-footer__tagline">
-            Cryptography runs in the browser; the server only relays
-            ciphertext.
-          </span>
-        </div>
-      </footer>
+        </footer>
+      )}
     </div>
   );
 }

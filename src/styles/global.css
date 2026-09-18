@@ -256,6 +256,15 @@ ul, ol {
   min-height: 100vh;
 }
 
+/* Application workspace shell — for /chat and /settings. Locks to the
+   viewport height so the workspace can scroll internally rather than
+   pushing the browser viewport around. */
+.app-shell--app {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* ---------- Header (distinct dark surface) ---------- */
 
 .app-header {
@@ -363,6 +372,24 @@ ul, ol {
 .app-main {
   flex: 1;
   background: var(--color-bg-subtle);
+  min-height: 0;
+}
+
+/* In-app workspace routes: the inner wrapper must fill the remaining
+   viewport height (after the navbar) and remove the large marketing
+   top/bottom padding so the workspace can take over the screen. */
+.app-main--app {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.app-main--app .app-main__inner {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
 }
 
 .app-main__inner {
@@ -447,6 +474,30 @@ ul, ol {
 
 .page {
   margin: 0 auto;
+}
+
+/* Application workspace pages (chat, settings) must fill the available flex height
+   inside the app-main app wrapper. */
+.page--chat {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+/* Settings inside the app shell: fit the viewport, scroll internally. */
+.app-main--app .page--settings {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: var(--space-8) var(--space-6) var(--space-10);
+  margin: 0;
+  max-width: var(--width-settings);
+  align-self: center;
+  width: 100%;
 }
 .page--narrow { max-width: var(--width-auth); }
 .page--settings { max-width: var(--width-settings); }
@@ -875,8 +926,8 @@ ul, ol {
   display: grid;
   grid-template-columns: minmax(17rem, 21rem) 1fr;
   gap: 0;
-  height: calc(100vh - var(--navbar-height) - var(--space-16) - var(--space-20));
-  min-height: 32rem;
+  flex: 1;
+  min-height: 0;
   background: var(--color-bg-elevated);
   border: 1px solid var(--color-surface-border);
   border-radius: var(--radius-lg);
@@ -1847,7 +1898,6 @@ ul, ol {
   }
   .chat-layout {
     grid-template-columns: 1fr;
-    height: calc(100vh - var(--navbar-height) - var(--space-10) - var(--space-12));
   }
   .chat-layout[data-active-peer="true"] .chat-sidebar {
     display: none;
