@@ -4,6 +4,7 @@ import { AppRouter } from './routes/router';
 import { WebSocketController } from './realtime/WebSocketController';
 import { authController } from './auth/AuthController';
 import { setRealtimeTransport, disposeRealtimeTransport } from './realtime/setup';
+import './keys/KeyController';
 
 const webSocketController = new WebSocketController({ authController });
 
