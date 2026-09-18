@@ -1,0 +1,2 @@
+# Reserved for the cryptographic layer (Ed25519, X25519, HKDF, AEAD, X3DH, Double Ratchet).
+# Phase 0 keeps this folder empty on purpose.

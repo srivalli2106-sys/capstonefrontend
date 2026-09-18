@@ -1,0 +1,2 @@
+# Reserved for cross-cutting helpers (backoff, logger, base64url).
+# Phase 0 keeps this folder empty on purpose.

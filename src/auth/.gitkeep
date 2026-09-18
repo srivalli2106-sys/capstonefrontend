@@ -1,0 +1,2 @@
+# Reserved for the authentication layer (AuthController, sessionStorage helpers).
+# Phase 0 keeps this folder empty on purpose.

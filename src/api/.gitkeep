@@ -1,0 +1,2 @@
+# Reserved for the HTTP client (api/http.ts, api/auth.ts, api/keys.ts, api/health.ts).
+# Phase 0 keeps this folder empty on purpose.
