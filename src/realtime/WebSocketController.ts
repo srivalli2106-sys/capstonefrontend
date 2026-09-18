@@ -85,7 +85,13 @@ export class WebSocketController {
         const identity = (snap as { identity?: { kind: string } }).identity;
         if (identity !== undefined && identity.kind === 'locked') {
           this.disconnect('lock');
+          return;
         }
+        // Authenticated and identity is not locked — ensure the transport is
+        // open. connect() is a no-op when the client is already open or
+        // connecting, and returns silently when no JWT is held yet; the next
+        // auth transition will retry.
+        this.connect();
       },
     );
   }
