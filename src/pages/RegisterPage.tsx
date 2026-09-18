@@ -1,25 +1,26 @@
 /**
  * Register page.
  *
- * Phase 2 generates a 32-byte random placeholder (NOT an Ed25519 key) for the
- * `ik_public` field, so the form can complete registration against the
- * deployed backend without any cryptographic primitives. Phase 3 replaces the
- * placeholder with a real Ed25519 keypair generated via Web Crypto / noble
- * curves and persists the private half in an encrypted local store.
- *
- * After a successful registration we redirect to /login because the backend
- * register endpoint does NOT issue a token — the user must complete the
- * challenge/verify PoP flow (Phase 3) to obtain one.
+ * Phase 3 flow:
+ *   1. User chooses a user_id.
+ *   2. User chooses a passphrase (and confirms).
+ *   3. The frontend generates a real Ed25519 keypair locally.
+ *   4. The public key (64 hex chars) is sent to POST /auth/register.
+ *   5. On backend success, the private seed is encrypted with a PBKDF2 key
+ *      derived from the passphrase, persisted in IndexedDB, and the user
+ *      is logged in via PoP challenge/verify.
+ *   6. On any failure the local record is wiped before throwing.
  */
 
 import type { FormEvent, JSX } from 'react';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ApiError } from '../api/http';
-import { authController } from '../auth/AuthController';
+import { authController, IdentityError } from '../auth/AuthController';
 
 type Status =
   | { kind: 'idle' }
+  | { kind: 'generating' }
   | { kind: 'submitting' }
   | { kind: 'success'; message: string }
   | { kind: 'error'; message: string; requestId: string | null };
@@ -27,66 +28,50 @@ type Status =
 export function RegisterPage(): JSX.Element {
   const navigate = useNavigate();
   const [userId, setUserId] = useState('');
-  const [ikPublic, setIkPublic] = useState('');
+  const [passphrase, setPassphrase] = useState('');
+  const [passphraseConfirm, setPassphraseConfirm] = useState('');
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
+  const [hasLocal, setHasLocal] = useState<boolean | null>(null);
 
   useEffect(() => {
-    setIkPublic(authController.generatePlaceholderIkPublic());
-  }, []);
+    if (userId.trim().length >= 3) {
+      void authController.hasLocalIdentity(userId).then(setHasLocal);
+    } else {
+      setHasLocal(null);
+    }
+  }, [userId]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    setStatus({ kind: 'submitting' });
+    setStatus({ kind: 'generating' });
     try {
-      await authController.register(userId, ikPublic);
+      await authController.register(userId, passphrase, passphraseConfirm);
       setStatus({
         kind: 'success',
-        message: 'Registration complete. Please sign in.',
+        message: 'Identity created. Signed in.',
       });
-      window.setTimeout(() => navigate('/login', { replace: true }), 600);
+      window.setTimeout(() => navigate('/chat', { replace: true }), 400);
     } catch (err) {
-      if (err instanceof ApiError) {
-        if (err.status === 409) {
-          setStatus({
-            kind: 'error',
-            message: 'That user_id is already registered.',
-            requestId: err.requestId,
-          });
-          return;
-        }
-        if (err.status === 429) {
-          setStatus({
-            kind: 'error',
-            message: 'Too many attempts. Please wait and try again.',
-            requestId: err.requestId,
-          });
-          return;
-        }
-        setStatus({
-          kind: 'error',
-          message: err.message,
-          requestId: err.requestId,
-        });
-        return;
-      }
-      const message =
-        err instanceof Error ? err.message : 'Registration failed.';
-      setStatus({ kind: 'error', message, requestId: null });
+      const mapped = mapError(err);
+      setStatus(mapped);
     }
   }
 
-  function regeneratePlaceholder(): void {
-    setIkPublic(authController.generatePlaceholderIkPublic());
-  }
+  const submitting = status.kind === 'generating' || status.kind === 'submitting';
+  const disabled =
+    submitting ||
+    userId.trim().length < 3 ||
+    passphrase.length < 8 ||
+    passphrase !== passphraseConfirm;
 
   return (
     <section className="page page--register">
       <h1>Create account</h1>
       <p className="page__lede">
-        Registration is one-time per user_id. The backend issues no token at
-        registration — you will be redirected to the sign-in page, which in
-        Phase 2 uses the development login and in Phase 3 will use the
-        Ed25519 challenge/verify flow.
+        Your identity is generated on this device. The private key never leaves
+        the browser; it is encrypted with a passphrase you choose and stored
+        locally in IndexedDB. There is no recovery: lose the passphrase and
+        lose the account.
       </p>
 
       <form className="form" onSubmit={handleSubmit} noValidate>
@@ -102,35 +87,47 @@ export function RegisterPage(): JSX.Element {
             required
             value={userId}
             onChange={(e) => setUserId(e.target.value)}
-            disabled={status.kind === 'submitting'}
+            disabled={submitting}
           />
-          <small className="form__hint">3 to 64 characters.</small>
+          <small className="form__hint">3 to 64 characters. One-time per identity.</small>
+          {hasLocal === true && (
+            <small className="form__hint form__hint--warn">
+              A local identity for this user_id already exists on this device.
+              Re-registering will overwrite the local record (you may need to
+              wipe the server-side account first).
+            </small>
+          )}
         </label>
 
         <label className="form__field">
-          <span className="form__label">ik_public (hex)</span>
-          <div className="form__row">
-            <input
-              className="form__input form__input--mono"
-              type="text"
-              name="ik_public"
-              value={ikPublic}
-              readOnly
-              spellCheck={false}
-            />
-            <button
-              type="button"
-              className="button"
-              onClick={regeneratePlaceholder}
-              disabled={status.kind === 'submitting'}
-            >
-              Regenerate
-            </button>
-          </div>
-          <small className="form__hint">
-            Phase 2 placeholder (32 random bytes). Phase 3 will replace this
-            with a real Ed25519 public key generated on this device.
-          </small>
+          <span className="form__label">Identity passphrase</span>
+          <input
+            className="form__input"
+            type="password"
+            name="passphrase"
+            autoComplete="new-password"
+            minLength={8}
+            required
+            value={passphrase}
+            onChange={(e) => setPassphrase(e.target.value)}
+            disabled={submitting}
+          />
+          <small className="form__hint">At least 8 characters.</small>
+        </label>
+
+        <label className="form__field">
+          <span className="form__label">Confirm passphrase</span>
+          <input
+            className="form__input"
+            type="password"
+            name="passphrase_confirm"
+            autoComplete="new-password"
+            minLength={8}
+            required
+            value={passphraseConfirm}
+            onChange={(e) => setPassphraseConfirm(e.target.value)}
+            disabled={submitting}
+          />
         </label>
 
         {status.kind === 'error' && (
@@ -153,11 +150,13 @@ export function RegisterPage(): JSX.Element {
           <button
             type="submit"
             className="button button--primary"
-            disabled={
-              status.kind === 'submitting' || userId.trim().length < 3
-            }
+            disabled={disabled}
           >
-            {status.kind === 'submitting' ? 'Registering…' : 'Register'}
+            {status.kind === 'generating'
+              ? 'Generating identity…'
+              : status.kind === 'submitting'
+                ? 'Submitting…'
+                : 'Register'}
           </button>
           <Link className="button" to="/login">
             Back to sign in
@@ -166,4 +165,33 @@ export function RegisterPage(): JSX.Element {
       </form>
     </section>
   );
+}
+
+function mapError(err: unknown): { kind: 'error'; message: string; requestId: string | null } {
+  if (err instanceof ApiError) {
+    if (err.status === 409) {
+      return {
+        kind: 'error',
+        message: 'That user_id is already registered with the server.',
+        requestId: err.requestId,
+      };
+    }
+    if (err.status === 429) {
+      return {
+        kind: 'error',
+        message: 'Too many attempts. Please wait and try again.',
+        requestId: err.requestId,
+      };
+    }
+    return {
+      kind: 'error',
+      message: err.message,
+      requestId: err.requestId,
+    };
+  }
+  if (err instanceof IdentityError) {
+    return { kind: 'error', message: err.message, requestId: null };
+  }
+  const message = err instanceof Error ? err.message : 'Registration failed.';
+  return { kind: 'error', message, requestId: null };
 }

@@ -15,7 +15,14 @@ const NAV_ITEMS: ReadonlyArray<NavItem> = [
 ];
 
 export function AppShell(): JSX.Element {
-  const { authenticated, userId } = useAuth();
+  const { authenticated, userId, identity } = useAuth();
+
+  const identityBadge =
+    identity.kind === 'unlocked'
+      ? 'unlocked'
+      : identity.kind === 'locked'
+        ? 'locked'
+        : 'no id';
 
   return (
     <div className="app-shell">
@@ -42,9 +49,17 @@ export function AppShell(): JSX.Element {
         </nav>
         <div className="app-header__user">
           {authenticated ? (
-            <span className="app-header__user-tag" title={userId ?? ''}>
-              {userId}
-            </span>
+            <>
+              <span
+                className={`app-header__identity app-header__identity--${identityBadge.replace(' ', '-')}`}
+                title={`Local identity: ${identityBadge}`}
+              >
+                {identityBadge}
+              </span>
+              <span className="app-header__user-tag" title={userId ?? ''}>
+                {userId}
+              </span>
+            </>
           ) : (
             <NavLink to="/login" className="app-header__link">
               Sign in
@@ -58,7 +73,7 @@ export function AppShell(): JSX.Element {
       </main>
 
       <footer className="app-footer">
-        <small>End-to-end encrypted client · Phase 2 foundation</small>
+        <small>End-to-end encrypted client · Phase 3 foundation</small>
       </footer>
     </div>
   );

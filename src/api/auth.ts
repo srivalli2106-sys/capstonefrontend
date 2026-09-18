@@ -13,11 +13,6 @@
  *                            422  → validation_error
  *                            429  → rate limit (1/hour per IP)
  *
- *   POST /auth/login      — DEV-ONLY password-less login.
- *                            200  → { token, user_id }
- *                            403  → forbidden (production)
- *                            404  → not_found
- *
  *   POST /auth/challenge  — issue a PoP nonce.
  *                            200  → { user_id, nonce (64 hex chars) }
  *                            404  → not_found
@@ -33,14 +28,15 @@
  *                            Header: Authorization: Bearer <token>
  *                            200  → { status: "logged_out" }
  *                            401  → invalid token
+ *
+ * The dev-only `/auth/login` endpoint exists in the backend but is not
+ * wrapped here in Phase 3. Production clients MUST use challenge/verify.
  */
 
 import { http, type HttpRequestOptions } from './http';
 import type {
   ChallengeRequest,
   ChallengeResponse,
-  DevLoginRequest,
-  DevLoginResponse,
   LogoutResponse,
   RegisterRequest,
   RegisterResponse,
@@ -53,10 +49,6 @@ export function register(
   opts: HttpRequestOptions = {},
 ) {
   return http.post<RegisterResponse>('/auth/register', body, opts);
-}
-
-export function devLogin(body: DevLoginRequest, opts: HttpRequestOptions = {}) {
-  return http.post<DevLoginResponse>('/auth/login', body, opts);
 }
 
 export function createChallenge(

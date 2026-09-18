@@ -7,6 +7,9 @@
  * The backend has NO password-based login. Authentication is purely
  * cryptographic: an Ed25519 identity key registered with the server, used to
  * sign a server-issued challenge nonce to obtain a short-lived JWT.
+ *
+ * Phase 3 wires the full PoP flow (challenge + verify). The dev-only
+ * `/auth/login` is intentionally not wrapped.
  */
 
 export interface RegisterRequest {
@@ -35,19 +38,6 @@ export interface VerifyRequest {
 }
 
 export interface VerifyResponse {
-  token: string;
-  user_id: string;
-}
-
-/**
- * Dev/test-only convenience login. Disabled in production.
- * Kept here for development workflows; will return 403 in prod.
- */
-export interface DevLoginRequest {
-  user_id: string;
-}
-
-export interface DevLoginResponse {
   token: string;
   user_id: string;
 }

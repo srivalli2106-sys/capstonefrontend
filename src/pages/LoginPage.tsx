@@ -1,23 +1,28 @@
 /**
  * Login page.
  *
- * Phase 2 submits to the backend's dev-only `/auth/login` endpoint. This
- * endpoint returns 403 in production deployments (verified by
- * `tests/test_auth_routes.py::test_login_disabled_in_production`), so the UI
- * surfaces a clear message when that happens.
+ * Phase 3 production flow:
+ *   1. User enters user_id + passphrase.
+ *   2. The frontend decrypts the local Ed25519 seed (IndexedDB + PBKDF2 +
+ *      AES-GCM).
+ *   3. POST /auth/challenge → nonce.
+ *   4. Sign the raw 32-byte nonce (NOT the hex string) with Ed25519.
+ *   5. POST /auth/verify → JWT.
  *
- * Phase 3 replaces this with the Ed25519 challenge/verify PoP flow.
+ * The user_id MUST match a local identity record. There is no account
+ * recovery by design.
  */
 
 import type { FormEvent, JSX } from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiError } from '../api/http';
-import { authController } from '../auth/AuthController';
+import { authController, IdentityError } from '../auth/AuthController';
 
 type Status =
   | { kind: 'idle' }
-  | { kind: 'submitting' }
+  | { kind: 'unlocking' }
+  | { kind: 'signing' }
   | { kind: 'error'; message: string; requestId: string | null };
 
 export function LoginPage(): JSX.Element {
@@ -26,51 +31,44 @@ export function LoginPage(): JSX.Element {
   const next = params.get('next') ?? '/chat';
 
   const [userId, setUserId] = useState('');
+  const [passphrase, setPassphrase] = useState('');
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
+  const [hasLocal, setHasLocal] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (userId.trim().length >= 3) {
+      void authController.hasLocalIdentity(userId).then(setHasLocal);
+    } else {
+      setHasLocal(null);
+    }
+  }, [userId]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    setStatus({ kind: 'submitting' });
+    setStatus({ kind: 'unlocking' });
     try {
-      await authController.login(userId);
+      setStatus({ kind: 'signing' });
+      await authController.login(userId, passphrase);
       navigate(decodeURIComponent(next), { replace: true });
     } catch (err) {
-      if (err instanceof ApiError) {
-        if (err.status === 403) {
-          setStatus({
-            kind: 'error',
-            message:
-              'Password-less login is disabled in this deployment. Proof-of-possession login will be enabled in Phase 3.',
-            requestId: err.requestId,
-          });
-          return;
-        }
-        if (err.status === 404) {
-          setStatus({
-            kind: 'error',
-            message: 'Unknown user. Register first.',
-            requestId: err.requestId,
-          });
-          return;
-        }
-        setStatus({
-          kind: 'error',
-          message: err.message,
-          requestId: err.requestId,
-        });
-        return;
-      }
-      const message = err instanceof Error ? err.message : 'Login failed.';
-      setStatus({ kind: 'error', message, requestId: null });
+      setStatus(mapError(err));
     }
   }
+
+  const submitting = status.kind === 'unlocking' || status.kind === 'signing';
+  const submitLabel =
+    status.kind === 'unlocking'
+      ? 'Unlocking identity…'
+      : status.kind === 'signing'
+        ? 'Signing challenge…'
+        : 'Sign in';
 
   return (
     <section className="page page--login">
       <h1>Sign in</h1>
       <p className="page__lede">
-        Enter your user_id. Phase 2 uses the backend development login; Phase 3
-        switches to the Ed25519 challenge/verify flow.
+        Authentication uses a proof-of-possession signature over a server
+        challenge. The signing key lives only on this device.
       </p>
 
       <form className="form" onSubmit={handleSubmit} noValidate>
@@ -86,9 +84,32 @@ export function LoginPage(): JSX.Element {
             required
             value={userId}
             onChange={(e) => setUserId(e.target.value)}
-            disabled={status.kind === 'submitting'}
+            disabled={submitting}
           />
           <small className="form__hint">3 to 64 characters.</small>
+          {hasLocal === false && userId.trim().length >= 3 && (
+            <small className="form__hint form__hint--warn">
+              No local identity for this user_id on this device.{' '}
+              <Link to="/register">Register instead.</Link>
+            </small>
+          )}
+        </label>
+
+        <label className="form__field">
+          <span className="form__label">Identity passphrase</span>
+          <input
+            className="form__input"
+            type="password"
+            name="passphrase"
+            autoComplete="current-password"
+            required
+            value={passphrase}
+            onChange={(e) => setPassphrase(e.target.value)}
+            disabled={submitting}
+          />
+          <small className="form__hint">
+            Used to unlock the locally-stored Ed25519 private key.
+          </small>
         </label>
 
         {status.kind === 'error' && (
@@ -106,9 +127,9 @@ export function LoginPage(): JSX.Element {
           <button
             type="submit"
             className="button button--primary"
-            disabled={status.kind === 'submitting' || userId.trim().length < 3}
+            disabled={submitting || userId.trim().length < 3 || passphrase.length === 0}
           >
-            {status.kind === 'submitting' ? 'Signing in…' : 'Sign in'}
+            {submitLabel}
           </button>
           <Link className="button" to="/register">
             Create account
@@ -117,4 +138,40 @@ export function LoginPage(): JSX.Element {
       </form>
     </section>
   );
+}
+
+function mapError(err: unknown): { kind: 'error'; message: string; requestId: string | null } {
+  if (err instanceof IdentityError) {
+    return { kind: 'error', message: err.message, requestId: null };
+  }
+  if (err instanceof ApiError) {
+    if (err.status === 401) {
+      return {
+        kind: 'error',
+        message: 'Authentication failed. Wrong passphrase or mismatched identity.',
+        requestId: err.requestId,
+      };
+    }
+    if (err.status === 404) {
+      return {
+        kind: 'error',
+        message: 'Unknown user. Register first.',
+        requestId: err.requestId,
+      };
+    }
+    if (err.status === 429) {
+      return {
+        kind: 'error',
+        message: 'Too many attempts. Please wait and try again.',
+        requestId: err.requestId,
+      };
+    }
+    return {
+      kind: 'error',
+      message: err.message,
+      requestId: err.requestId,
+    };
+  }
+  const message = err instanceof Error ? err.message : 'Sign in failed.';
+  return { kind: 'error', message, requestId: null };
 }

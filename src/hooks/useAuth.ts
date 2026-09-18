@@ -2,7 +2,7 @@
  * React hook for the AuthController.
  *
  * Re-renders the calling component when the controller notifies its
- * listeners (login, logout, 401-driven clear, boot-time restore).
+ * listeners (login, logout, 401-driven clear, unlock/lock).
  */
 
 import { useEffect, useState } from 'react';

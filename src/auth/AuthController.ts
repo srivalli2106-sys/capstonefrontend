@@ -1,29 +1,28 @@
 /**
  * AuthController — single source of truth for the frontend's authentication
- * state.
+ * and identity state.
  *
- * Responsibilities (Phase 2):
- *  - Hold the in-memory JWT and the resolved user_id.
- *  - Restore from sessionStorage on app boot.
- *  - Register with the HTTP client so every authenticated request gets the
- *    `Authorization: Bearer <token>` header and so any 401 invalidates the
- *    current session.
- *  - Expose `register`, `login` (dev-only), `logout`, and a small listener
- *    API for React.
+ * Responsibilities (Phase 3):
+ *  - Generate a real Ed25519 identity locally on registration.
+ *  - Persist the encrypted identity in IndexedDB (no plaintext on disk).
+ *  - Run the backend's PoP authentication (`/auth/challenge` + `/auth/verify`)
+ *    by signing the raw nonce bytes with the local Ed25519 private key.
+ *  - Hold the in-memory JWT and the unlocked identity.
+ *  - Restore JWT from sessionStorage on app boot (identity is never restored
+ *    — the user must re-unlock with their passphrase).
+ *  - Register a 401 handler so stale tokens invalidate the session.
  *
- * Phase 2 limitations (documented, NOT implemented here):
- *  - `register` accepts a placeholder `ik_public` of 64 hex chars generated
- *    from `crypto.getRandomValues`. Real Ed25519 key generation, signature
- *    computation, and encrypted local storage are deferred to Phase 3.
- *  - `login` uses the dev-only `/auth/login` endpoint. In production this
- *    returns 403 (verified in `tests/test_auth_routes.py::test_login_disabled_in_production`);
- *    Phase 3 will switch to the challenge/verify PoP flow.
+ * Phase 3 explicitly does NOT use the dev-only `/auth/login` endpoint.
+ *
+ * Phase 4+ will introduce X25519, X3DH, the Double Ratchet, and key
+ * bundles. None of that is wired here.
  */
 
 import {
-  devLogin,
+  createChallenge as apiChallenge,
   logout as apiLogout,
   register as apiRegister,
+  verifyChallenge as apiVerify,
 } from '../api/auth';
 import { setUnauthorizedHandler } from '../api/http';
 import {
@@ -32,42 +31,57 @@ import {
   loadUserId,
   saveToken,
 } from './sessionStorage';
+import {
+  IdentityError,
+  createLocalIdentity,
+  deleteLocalIdentity,
+  inspectIdentity,
+  unlockIdentity,
+  validateRegistrationInput,
+  type PublicIdentity,
+  type UnlockedIdentity,
+} from '../crypto/identity';
+import { hexToBytes } from '../crypto/hex';
 import type { JwtClaims } from '../types/auth';
 
 const USER_ID_MIN_LENGTH = 3;
 const USER_ID_MAX_LENGTH = 64;
-const IK_PUBLIC_HEX_LENGTH = 64;
 
-export interface ValidationError {
-  field: string;
-  message: string;
-}
+export type IdentityState =
+  | { kind: 'none' }
+  | { kind: 'locked'; userId: string; publicKeyHex: string; publicKeyShortId: string }
+  | { kind: 'unlocked'; userId: string; publicKeyHex: string; publicKeyShortId: string };
 
 export interface AuthSnapshot {
   authenticated: boolean;
   userId: string | null;
   exp: number | null;
+  identity: IdentityState;
 }
 
 type Listener = (snapshot: AuthSnapshot) => void;
 
 class AuthControllerImpl {
   private token: string | null;
-  private userId: string | null;
+  private sessionUserId: string | null;
   private exp: number | null;
+  private unlocked: UnlockedIdentity | null;
+  private knownIdentity: PublicIdentity | null;
   private listeners: Set<Listener> = new Set();
   private installed = false;
 
   constructor() {
     this.token = loadToken();
-    this.userId = loadUserId();
+    this.sessionUserId = loadUserId();
     this.exp = this.decodeExp(this.token);
     if (this.token !== null && (this.exp === null || this.exp * 1000 <= Date.now())) {
       this.token = null;
-      this.userId = null;
+      this.sessionUserId = null;
       this.exp = null;
       clearToken();
     }
+    this.unlocked = null;
+    this.knownIdentity = null;
   }
 
   install(): void {
@@ -75,15 +89,16 @@ class AuthControllerImpl {
     this.installed = true;
     setUnauthorizedHandler((info) => {
       if (info.path === '/auth/logout') return;
-      this.clear({ silent: false });
+      this.clearSession({ silent: false });
     });
   }
 
   getSnapshot(): AuthSnapshot {
     return {
-      authenticated: this.token !== null && this.userId !== null,
-      userId: this.userId,
+      authenticated: this.token !== null && this.sessionUserId !== null,
+      userId: this.sessionUserId,
       exp: this.exp,
+      identity: this.identityState(),
     };
   }
 
@@ -99,77 +114,181 @@ class AuthControllerImpl {
   }
 
   getUserId(): string | null {
-    return this.userId;
+    return this.sessionUserId;
   }
 
-  validateUserId(userId: string): ValidationError | null {
+  getUnlockedIdentity(): UnlockedIdentity | null {
+    return this.unlocked;
+  }
+
+  validateUserId(userId: string): string | null {
     const trimmed = userId.trim();
     if (trimmed.length < USER_ID_MIN_LENGTH) {
-      return {
-        field: 'user_id',
-        message: `user_id must be at least ${USER_ID_MIN_LENGTH} characters.`,
-      };
+      return `user_id must be at least ${USER_ID_MIN_LENGTH} characters.`;
     }
     if (trimmed.length > USER_ID_MAX_LENGTH) {
-      return {
-        field: 'user_id',
-        message: `user_id must be at most ${USER_ID_MAX_LENGTH} characters.`,
-      };
+      return `user_id must be at most ${USER_ID_MAX_LENGTH} characters.`;
     }
     return null;
   }
 
   /**
-   * Generate a 32-byte random placeholder, hex-encoded.
-   *
-   * NOT an Ed25519 key. Replaced by a real keypair in Phase 3.
-   * Documented in the register page and the README.
+   * Inspect the local IndexedDB record for `userId`. Does NOT decrypt.
+   * Useful for the login screen to detect "no identity yet" cases.
    */
-  generatePlaceholderIkPublic(): string {
-    const bytes = new Uint8Array(32);
-    crypto.getRandomValues(bytes);
-    return bytesToHex(bytes);
-  }
-
-  validateIkPublic(hex: string): ValidationError | null {
-    if (hex.length !== IK_PUBLIC_HEX_LENGTH) {
-      return {
-        field: 'ik_public',
-        message: `ik_public must be exactly ${IK_PUBLIC_HEX_LENGTH} hex characters.`,
-      };
+  async hasLocalIdentity(userId: string): Promise<boolean> {
+    try {
+      const pub = await inspectIdentity(userId);
+      return pub !== null;
+    } catch {
+      return false;
     }
-    if (!/^[0-9a-fA-F]+$/.test(hex)) {
-      return {
-        field: 'ik_public',
-        message: 'ik_public must be hexadecimal.',
-      };
-    }
-    return null;
-  }
-
-  async register(userId: string, ikPublicHex: string): Promise<void> {
-    const idError = this.validateUserId(userId);
-    if (idError !== null) {
-      throw new Error(idError.message);
-    }
-    const keyError = this.validateIkPublic(ikPublicHex);
-    if (keyError !== null) {
-      throw new Error(keyError.message);
-    }
-    await apiRegister({ user_id: userId.trim(), ik_public: ikPublicHex });
   }
 
   /**
-   * Dev-only login. Will throw an `ApiError` with status 403 in production.
-   * Phase 3 replaces this with the Ed25519 challenge/verify flow.
+   * Phase 3 registration flow:
+   *   1. Generate an Ed25519 keypair locally.
+   *   2. Encrypt + persist the private seed in IndexedDB.
+   *   3. POST /auth/register with the real `ik_public`.
+   *   4. On backend success: unlock the identity, run PoP challenge/verify,
+   *      and establish the session.
+   *   5. On backend failure: wipe the local record (rollback) and throw.
    */
-  async login(userId: string): Promise<void> {
+  async register(
+    userId: string,
+    passphrase: string,
+    passphraseConfirm: string,
+  ): Promise<void> {
     const idError = this.validateUserId(userId);
     if (idError !== null) {
-      throw new Error(idError.message);
+      throw new Error(idError);
     }
-    const { data } = await devLogin({ user_id: userId.trim() });
-    this.acceptSession(data.token, data.user_id);
+
+    const trimmedId = userId.trim();
+
+    // Validate input (including passphrase length + confirmation) before any
+    // crypto work so a bad passphrase cannot leave a half-initialized
+    // IndexedDB record behind.
+    try {
+      validateRegistrationInput(trimmedId, passphrase, passphraseConfirm);
+    } catch (err) {
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+
+    let createdHex: string | null = null;
+    try {
+      const { publicKeyHex } = await createLocalIdentity(
+        trimmedId,
+        passphrase,
+      );
+      createdHex = publicKeyHex;
+
+      await apiRegister({ user_id: trimmedId, ik_public: publicKeyHex });
+
+      // Register succeeded; now complete the PoP login.
+      await this.completeChallengeVerify(trimmedId, passphrase);
+
+      // Update cached known identity.
+      this.knownIdentity = {
+        userId: trimmedId,
+        publicKeyHex,
+        publicKeyShortId: publicKeyHex.slice(0, 12),
+      };
+    } catch (err) {
+      // Rollback the local record if we created one but registration failed.
+      if (createdHex !== null) {
+        try {
+          await deleteLocalIdentity(trimmedId);
+        } catch {
+          // ignore secondary failure
+        }
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Phase 3 login flow:
+   *   1. Look up the encrypted local identity.
+   *   2. Decrypt the seed with the passphrase (PBKDF2 + AES-GCM).
+   *   3. Run PoP challenge/verify against the backend.
+   *   4. On success, hold both the JWT and the unlocked identity.
+   *   5. On failure, lock the identity and rethrow.
+   */
+  async login(userId: string, passphrase: string): Promise<void> {
+    const idError = this.validateUserId(userId);
+    if (idError !== null) {
+      throw new Error(idError);
+    }
+    const trimmedId = userId.trim();
+
+    // Unlock first; if the passphrase is wrong or no record exists, fail
+    // BEFORE we touch the backend. This avoids leaking which user_ids exist
+    // via a backend 404 vs a local "no record" 404.
+    const unlocked = await unlockIdentity(trimmedId, passphrase);
+    try {
+      await this.runChallengeVerifyAgainstUnlocked(unlocked);
+      this.unlocked = unlocked;
+      this.knownIdentity = {
+        userId: unlocked.userId,
+        publicKeyHex: unlocked.publicKeyHex,
+        publicKeyShortId: unlocked.publicKeyShortId,
+      };
+      this.acceptSessionFromLogin(trimmedId);
+    } catch (err) {
+      unlocked.lock();
+      throw err;
+    }
+  }
+
+  /**
+   * Re-unlock the local identity without re-running challenge/verify.
+   * Useful after a page reload when the JWT may still be valid.
+   */
+  async unlock(userId: string, passphrase: string): Promise<void> {
+    const unlocked = await unlockIdentity(userId.trim(), passphrase);
+    // If the unlocked identity's user_id doesn't match the current session,
+    // refuse — keeps us from signing challenges as the wrong account.
+    if (this.sessionUserId !== null && unlocked.userId !== this.sessionUserId) {
+      unlocked.lock();
+      throw new Error(
+        'Unlocked identity does not match the current session. Sign out first.',
+      );
+    }
+    if (this.unlocked !== null) {
+      this.unlocked.lock();
+    }
+    this.unlocked = unlocked;
+    this.knownIdentity = {
+      userId: unlocked.userId,
+      publicKeyHex: unlocked.publicKeyHex,
+      publicKeyShortId: unlocked.publicKeyShortId,
+    };
+    this.notify();
+  }
+
+  /**
+   * Lock the in-memory identity (drops the decrypted seed) without
+   * touching the JWT or the on-disk record.
+   */
+  lockIdentity(): void {
+    if (this.unlocked !== null) {
+      this.unlocked.lock();
+      this.unlocked = null;
+    }
+    this.notify();
+  }
+
+  /**
+   * Refresh the cached `knownIdentity` for the active session by re-reading
+   * IndexedDB. Useful after a successful register where we want the UI to
+   * reflect the just-created record.
+   */
+  async refreshKnownIdentity(): Promise<void> {
+    if (this.sessionUserId === null) return;
+    const pub = await inspectIdentity(this.sessionUserId);
+    this.knownIdentity = pub;
+    this.notify();
   }
 
   async logout(): Promise<void> {
@@ -179,31 +298,106 @@ class AuthControllerImpl {
         await apiLogout({ authToken: current });
       }
     } finally {
-      this.clear({ silent: false });
+      this.clearSession({ silent: false });
     }
   }
 
   /**
-   * Local-only logout (e.g., when 401 indicates the token is dead).
-   * Does NOT call the backend; the server-side blacklist will expire
-   * naturally at `exp`.
+   * Wipe the local encrypted identity record for the current user.
+   * Use only after explicit user confirmation.
    */
-  clearLocal(): void {
-    this.clear({ silent: false });
-  }
-
-  private acceptSession(token: string, userId: string): void {
-    this.token = token;
-    this.userId = userId;
-    this.exp = this.decodeExp(token);
-    saveToken(token, userId);
+  async wipeLocalIdentity(userId?: string): Promise<void> {
+    const id = (userId ?? this.sessionUserId ?? '').trim();
+    if (id.length === 0) return;
+    await deleteLocalIdentity(id);
+    if (this.knownIdentity?.userId === id) {
+      this.knownIdentity = null;
+    }
+    if (this.unlocked?.userId === id) {
+      this.unlocked.lock();
+      this.unlocked = null;
+    }
     this.notify();
   }
 
-  private clear(_opts: { silent: boolean }): void {
+  clearLocal(): void {
+    this.clearSession({ silent: false });
+  }
+
+  // ----- private helpers -----
+
+  private async completeChallengeVerify(
+    userId: string,
+    passphrase: string,
+  ): Promise<void> {
+    const unlocked = await unlockIdentity(userId, passphrase);
+    try {
+      await this.runChallengeVerifyAgainstUnlocked(unlocked);
+      this.unlocked = unlocked;
+      this.acceptSessionFromLogin(userId);
+    } catch (err) {
+      unlocked.lock();
+      throw err;
+    }
+  }
+
+  private async runChallengeVerifyAgainstUnlocked(
+    unlocked: UnlockedIdentity,
+  ): Promise<void> {
+    const { data: challenge } = await apiChallenge({
+      user_id: unlocked.userId,
+    });
+    const rawNonce = hexToBytes(challenge.nonce);
+    if (rawNonce.length !== 32) {
+      throw new Error('server returned an unexpected nonce length');
+    }
+    const signatureBytes = unlocked.signNonceRaw(rawNonce);
+    const signatureHex = bytesToHex(signatureBytes);
+    const { data: verified } = await apiVerify({
+      user_id: unlocked.userId,
+      nonce: challenge.nonce,
+      signature: signatureHex,
+    });
+    this.token = verified.token;
+    this.sessionUserId = verified.user_id;
+    this.exp = this.decodeExp(verified.token);
+    saveToken(verified.token, verified.user_id);
+  }
+
+  private acceptSessionFromLogin(_userId: string): void {
+    // The session fields were already written by runChallengeVerifyAgainstUnlocked.
+    this.notify();
+  }
+
+  private identityState(): IdentityState {
+    if (this.unlocked !== null) {
+      return {
+        kind: 'unlocked',
+        userId: this.unlocked.userId,
+        publicKeyHex: this.unlocked.publicKeyHex,
+        publicKeyShortId: this.unlocked.publicKeyShortId,
+      };
+    }
+    if (this.knownIdentity !== null) {
+      return {
+        kind: 'locked',
+        userId: this.knownIdentity.userId,
+        publicKeyHex: this.knownIdentity.publicKeyHex,
+        publicKeyShortId: this.knownIdentity.publicKeyShortId,
+      };
+    }
+    return { kind: 'none' };
+  }
+
+  private clearSession(_opts: { silent: boolean }): void {
+    if (this.unlocked !== null) {
+      this.unlocked.lock();
+      this.unlocked = null;
+    }
     this.token = null;
-    this.userId = null;
+    this.sessionUserId = null;
     this.exp = null;
+    this.knownIdentity = null;
     clearToken();
     this.notify();
   }
@@ -237,11 +431,6 @@ function bytesToHex(bytes: Uint8Array): string {
   return out;
 }
 
-/**
- * Decode a JWT WITHOUT verifying the signature. Verification is the server's
- * responsibility. We only use this for client-side UX (e.g., expiry
- * detection). Any tampering or false claims will be rejected by the backend.
- */
 function decodeJwtClaims(token: string): JwtClaims | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
@@ -284,5 +473,6 @@ function decodeJwtClaims(token: string): JwtClaims | null {
   };
 }
 
+export { IdentityError };
 export const authController = new AuthControllerImpl();
 authController.install();
