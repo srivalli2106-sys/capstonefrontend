@@ -83,6 +83,10 @@ export class WebSocketController {
   }
 
 
+  public getAuthController(): AuthControllerLike {
+    return this.authController;
+  }
+
   public dispose(): void {
     if (this.unsubscribeAuth !== null) {
       this.unsubscribeAuth();

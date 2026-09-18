@@ -289,7 +289,7 @@ export class DoubleRatchet {
     return packMessage(header, ciphertext);
   }
 
-  public async decryptMessage(wire: Uint8Array, ad: Uint8Array): Promise<Uint8Array> {
+public async decryptMessage(wire: Uint8Array, ad: Uint8Array): Promise<Uint8Array> {
     if (this._wiped) throw new RatchetError('state_malformed', 'ratchet is wiped');
     const message = unpackMessage(wire);
     if (this._remoteDh === null || !bytesEqual(message.dh, this._remoteDh)) {
@@ -308,9 +308,9 @@ export class DoubleRatchet {
           'no receiving chain for this turn',
         );
       }
-      if (message.n < this._nr) {
-        throw new DecryptionError('replayed', 'replayed or expired message index');
-      }
+        if (message.n < this._nr) {
+          throw new DecryptionError('replayed', 'replayed or expired message index');
+        }
       if (message.n > this._nr + this._maxSkip) {
         throw new DecryptionError('too_far_ahead', 'message index too far ahead');
       }
