@@ -169,3 +169,138 @@ a {
     padding: var(--space-4);
   }
 }
+
+.health-status {
+  margin-top: var(--space-5);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg-elevated);
+}
+
+.health-status__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.health-status__refresh {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.health-status__refresh:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.health-badge {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+
+.health-badge--loading {
+  color: var(--color-fg-muted);
+  background: var(--color-bg);
+  border-color: var(--color-border);
+}
+
+.health-badge--ok {
+  color: #166534;
+  background: #dcfce7;
+  border-color: #86efac;
+}
+
+.health-badge--unavailable {
+  color: #854d0e;
+  background: #fef3c7;
+  border-color: #fcd34d;
+}
+
+.health-badge--error {
+  color: #991b1b;
+  background: #fee2e2;
+  border-color: #fca5a5;
+}
+
+@media (prefers-color-scheme: dark) {
+  .health-badge--ok {
+    color: #4ade80;
+    background: #052e16;
+    border-color: #14532d;
+  }
+
+  .health-badge--unavailable {
+    color: #fbbf24;
+    background: #422006;
+    border-color: #78350f;
+  }
+
+  .health-badge--error {
+    color: #f87171;
+    background: #450a0a;
+    border-color: #7f1d1d;
+  }
+}
+
+.health-status__api {
+  margin: 0 0 var(--space-3);
+  font-size: 0.8125rem;
+  color: var(--color-fg-muted);
+  word-break: break-all;
+}
+
+.health-status__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.health-status__list li {
+  display: flex;
+  gap: var(--space-3);
+  font-size: 0.875rem;
+}
+
+.health-status__label {
+  color: var(--color-fg-muted);
+  min-width: 7rem;
+}
+
+.health-status__value {
+  font-weight: 500;
+}
+
+.health-status__detail {
+  margin: var(--space-2) 0 0;
+  font-size: 0.875rem;
+  color: var(--color-fg-muted);
+}
+
+.health-status__meta {
+  font-size: 0.75rem;
+  color: var(--color-fg-muted);
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  padding: 0 0.25em;
+  background: var(--color-bg);
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+}

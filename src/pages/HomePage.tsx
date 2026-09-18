@@ -1,4 +1,6 @@
+import type { JSX } from 'react';
 import { Link } from 'react-router-dom';
+import { HealthStatus } from '../components/HealthStatus';
 
 export function HomePage(): JSX.Element {
   return (
@@ -15,6 +17,8 @@ export function HomePage(): JSX.Element {
           Create account
         </Link>
       </div>
+
+      <HealthStatus />
     </section>
   );
 }
