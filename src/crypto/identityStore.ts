@@ -46,12 +46,34 @@ export interface EncryptedSeedEnvelope {
   ciphertext_hex: string;
 }
 
+/**
+ * Encrypted cache for the X25519 device key material (Phase 4).
+ *
+ * This reuses the same passphrase-derived AES key as the seed envelope but a
+ * DIFFERENT associated-data context (`secure-messaging-device-keys-v1`), so
+ * the two ciphertexts are domain-separated and bound to the owning user_id.
+ */
+export interface DeviceKeysEnvelope {
+  record_version: number;
+  kdf: 'pbkdf2-sha256';
+  iterations: number;
+  salt_hex: string;
+  iv_hex: string;
+  ciphertext_hex: string;
+}
+
 export interface IdentityRecord {
   user_id: string;
   ik_public: string;
   created_at: number;
   schema_version: number;
   enc_seed: EncryptedSeedEnvelope;
+  /**
+   * Present on records written by this build / after lazy provisioning.
+   * Absent on old Phase 3 records — `identity.unlockIdentity` treats a
+   * missing envelope as "not yet provisioned" and writes one on first unlock.
+   */
+  enc_device_keys?: DeviceKeysEnvelope;
 }
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
@@ -129,6 +151,29 @@ export async function deleteIdentityRecord(userId: string): Promise<void> {
   }
   const db = await getDb();
   await db.delete(IDENTITY_STORE_NAME, userId);
+}
+
+/**
+ * Attach or replace the encrypted device-keys envelope on a user's record.
+ * The rest of the record is preserved verbatim.
+ */
+export async function setDeviceKeysEnvelope(
+  userId: string,
+  envelope: DeviceKeysEnvelope,
+): Promise<void> {
+  if (!isIndexedDbAvailable()) {
+    throw new Error('IndexedDB is not available in this environment');
+  }
+  const db = await getDb();
+  const tx = db.transaction(IDENTITY_STORE_NAME, 'readwrite');
+  const store = tx.objectStore(IDENTITY_STORE_NAME);
+  const record = (await store.get(userId)) as IdentityRecord | undefined;
+  if (record === undefined) {
+    throw new Error(`no identity record for user ${userId}`);
+  }
+  record.enc_device_keys = envelope;
+  await store.put(record);
+  await tx.done;
 }
 
 /**

@@ -17,6 +17,7 @@ import { useNavigate } from 'react-router-dom';
 import { ApiError } from '../api/http';
 import { authController } from '../auth/AuthController';
 import { useAuth } from '../hooks/useAuth';
+import { useKeyStatus } from '../hooks/useKeyStatus';
 
 type Action =
   | { kind: 'idle' }
@@ -27,6 +28,7 @@ type Action =
 
 export function SettingsPage(): JSX.Element {
   const { authenticated, userId, exp, identity } = useAuth();
+  const keyStatus = useKeyStatus();
   const navigate = useNavigate();
   const [action, setAction] = useState<Action>({ kind: 'idle' });
   const [error, setError] = useState<{ message: string; requestId: string | null } | null>(null);
@@ -145,6 +147,43 @@ export function SettingsPage(): JSX.Element {
           </div>
         )}
       </dl>
+
+      <h2 className="page__h2">X3DH key bundle</h2>
+      {identity.kind !== 'unlocked' ? (
+        <p className="page__lede">Unlock your identity to view device keys.</p>
+      ) : keyStatus.kind === 'not_provisioned' ? (
+        <p className="page__lede">No X25519 device key material yet.</p>
+      ) : (
+        <>
+          <dl className="settings-list">
+            <div className="settings-list__row">
+              <dt>IKX (X3DH identity)</dt>
+              <dd>
+                <code>{keyStatus.local.ikxPublicHex.slice(0, 12)}…</code>
+              </dd>
+            </div>
+            <div className="settings-list__row">
+              <dt>SPK (signed prekey)</dt>
+              <dd>
+                <code>{keyStatus.local.spkPublicHex.slice(0, 12)}…</code>
+              </dd>
+            </div>
+            <div className="settings-list__row">
+              <dt>OPK (one-time prekey)</dt>
+              <dd>
+                {keyStatus.local.opkPublicHex === null
+                  ? 'none'
+                  : `${keyStatus.local.opkPublicHex.slice(0, 12)}…`}
+              </dd>
+            </div>
+          </dl>
+          {keyStatus.kind === 'upload_blocked' && (
+            <div className="form__error" role="alert">
+              <span>{keyStatus.reason}</span>
+            </div>
+          )}
+        </>
+      )}
 
       {error !== null && (
         <div className="form__error" role="alert">

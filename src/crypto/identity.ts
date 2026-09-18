@@ -36,8 +36,18 @@ import {
   getIdentityRecord,
   isIndexedDbAvailable,
   saveIdentityRecord,
+  setDeviceKeysEnvelope,
+  type DeviceKeysEnvelope,
   type IdentityRecord,
 } from './identityStore';
+import {
+  DEVICE_KEYS_PAYLOAD_VERSION,
+  deviceKeysAssociatedData,
+  decryptDeviceKeys,
+  encryptDeviceKeys,
+  generateDeviceKeys,
+  type DeviceKeysPrivate,
+} from './deviceKeys';
 
 export class IdentityError extends Error {
   public readonly code:
@@ -77,7 +87,13 @@ export interface UnlockedIdentity extends PublicIdentity {
   signNonceRaw(rawNonce: Uint8Array): Uint8Array;
   /** Return the raw 32-byte Ed25519 seed. Keep it inside the JS heap. */
   exportRawSeed(): Uint8Array;
-  /** Drop the seed from memory. Calling any signing method after this fails. */
+  /**
+   * The decrypted X25519 device key material (IKX/SPK/OPK privates) bound to
+   * this account. Null when the record has not been provisioned yet.
+   * Never sent to the backend; never re-persisted plaintext.
+   */
+  deviceKeys: DeviceKeysPrivate | null;
+  /** Drop ALL private material (seed + device keys) from memory. */
   lock(): void;
 }
 
@@ -118,10 +134,11 @@ export function validateRegistrationInput(
 }
 
 /**
- * Generate a fresh Ed25519 identity, encrypt its seed with the passphrase,
- * persist it. The identity is NOT registered with the backend here — the
- * caller is responsible for the backend `/auth/register` call and for
- * invoking `confirmRegistration` only after that succeeds.
+ * Generate a fresh Ed25519 identity + X25519 device key material, encrypt its
+ * seed and device keys with the passphrase, persist it. The identity is NOT
+ * registered with the backend here — the caller is responsible for the
+ * backend `/auth/register` call and for invoking `confirmRegistration` only
+ * after that succeeds.
  */
 export async function createLocalIdentity(
   userId: string,
@@ -139,12 +156,19 @@ export async function createLocalIdentity(
   const publicKeyHex = publicKeyToHex(publicKey);
   const salt = randomSalt();
 
+  const trimmedId = userId.trim();
   const { subtleKey } = await deriveAesKey(passphrase, salt, PBKDF2_ITERATIONS);
-  const ad = buildAssociatedData(userId.trim());
-  const blob = await encrypt(subtleKey, privateSeed, ad);
+
+  const seedAd = buildAssociatedData(trimmedId);
+  const blob = await encrypt(subtleKey, privateSeed, seedAd);
+
+  // Phase 4: device key material (independent X25519 keys, per backend spec).
+  const deviceKeys = generateDeviceKeys();
+  const deviceAd = deviceKeysAssociatedData(trimmedId);
+  const deviceBlob = await encryptDeviceKeys(subtleKey, deviceKeys, deviceAd);
 
   const record: IdentityRecord = {
-    user_id: userId.trim(),
+    user_id: trimmedId,
     ik_public: publicKeyHex,
     created_at: Date.now(),
     schema_version: IDENTITY_RECORD_VERSION,
@@ -155,6 +179,14 @@ export async function createLocalIdentity(
       salt_hex: bytesToHex(salt),
       iv_hex: blob.ivHex,
       ciphertext_hex: blob.ciphertextHex,
+    },
+    enc_device_keys: {
+      record_version: DEVICE_KEYS_PAYLOAD_VERSION,
+      kdf: 'pbkdf2-sha256',
+      iterations: PBKDF2_ITERATIONS,
+      salt_hex: bytesToHex(salt),
+      iv_hex: deviceBlob.ivHex,
+      ciphertext_hex: deviceBlob.ciphertextHex,
     },
   };
   await saveIdentityRecord(record);
@@ -212,6 +244,7 @@ export async function unlockIdentity(
   }
 
   let seed: Uint8Array;
+  let deviceKeys: DeviceKeysPrivate;
   try {
     const salt = hexToBytes(record.enc_seed.salt_hex);
     const { subtleKey } = await deriveAesKey(
@@ -225,7 +258,13 @@ export async function unlockIdentity(
       ciphertextHex: record.enc_seed.ciphertext_hex,
     };
     seed = await decrypt(subtleKey, blob, ad);
-  } catch {
+    // Phase 4: the device key material shares the passphrase domain but is
+    // independently derived/encrypted. Provisioned lazily for old records.
+    deviceKeys = await loadOrProvisionDeviceKeys(record, passphrase);
+  } catch (err) {
+    if (err instanceof IdentityError) {
+      throw err;
+    }
     throw new IdentityError(
       'wrong_passphrase',
       'Incorrect passphrase or corrupted record.',
@@ -245,6 +284,7 @@ export async function unlockIdentity(
     userId: record.user_id,
     publicKeyHex,
     publicKeyShortId: publicKeyShortId_,
+    deviceKeys,
     signNonceRaw(rawNonce: Uint8Array): Uint8Array {
       if (locked) {
         throw new IdentityError('invalid_input', 'Identity is locked.');
@@ -259,13 +299,62 @@ export async function unlockIdentity(
     },
     lock(): void {
       locked = true;
-      // Best-effort overwrite of the seed buffer. JS does not guarantee
-      // erasure from the heap, but we still drop references so the GC can
-      // reclaim the buffer.
+      // Best-effort overwrite of the seed and device-key buffers. JS does not
+      // guarantee erasure from the heap, but we still drop references.
       seed.fill(0);
+      wipeDeviceKeys(deviceKeys);
     },
   };
   return unlocked;
+}
+
+function wipeDeviceKeys(device: DeviceKeysPrivate): void {
+  device.ikxPrivate.fill(0);
+  device.spkPrivate.fill(0);
+  if (device.opkPrivate !== null) {
+    device.opkPrivate.fill(0);
+  }
+}
+
+/**
+ * Decrypt the X25519 device key material for a record. When the record
+ * predates Phase 4 (no `enc_device_keys` envelope), generates fresh device
+ * keys, persists their ciphertext, and returns them.
+ */
+async function loadOrProvisionDeviceKeys(
+  record: IdentityRecord,
+  passphrase: string,
+): Promise<DeviceKeysPrivate> {
+  if (record.enc_device_keys !== undefined) {
+    const salt = hexToBytes(record.enc_device_keys.salt_hex);
+    const { subtleKey } = await deriveAesKey(
+      passphrase,
+      salt,
+      record.enc_device_keys.iterations,
+    );
+    const ad = deviceKeysAssociatedData(record.user_id);
+    const blob = {
+      ivHex: record.enc_device_keys.iv_hex,
+      ciphertextHex: record.enc_device_keys.ciphertext_hex,
+    };
+    return decryptDeviceKeys(subtleKey, blob, ad);
+  }
+
+  const deviceKeys = generateDeviceKeys();
+  const salt = randomSalt();
+  const { subtleKey } = await deriveAesKey(passphrase, salt, PBKDF2_ITERATIONS);
+  const ad = deviceKeysAssociatedData(record.user_id);
+  const blob = await encryptDeviceKeys(subtleKey, deviceKeys, ad);
+  const envelope: DeviceKeysEnvelope = {
+    record_version: DEVICE_KEYS_PAYLOAD_VERSION,
+    kdf: 'pbkdf2-sha256',
+    iterations: PBKDF2_ITERATIONS,
+    salt_hex: bytesToHex(salt),
+    iv_hex: blob.ivHex,
+    ciphertext_hex: blob.ciphertextHex,
+  };
+  await setDeviceKeysEnvelope(record.user_id, envelope);
+  return deviceKeys;
 }
 
 /**
