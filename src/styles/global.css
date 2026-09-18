@@ -254,13 +254,16 @@ ul, ol {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 /* Application workspace shell — for /chat and /settings. Locks to the
    viewport height so the workspace can scroll internally rather than
-   pushing the browser viewport around. */
+   pushing the browser viewport around. Uses dvh with vh fallback so the
+   on-screen keyboard (iOS / Android) doesn't collapse the layout. */
 .app-shell--app {
   height: 100vh;
+  height: 100dvh;
   min-height: 0;
   overflow: hidden;
 }
@@ -276,6 +279,7 @@ ul, ol {
   height: var(--navbar-height);
   background: var(--color-header-bg);
   border-bottom: 1px solid var(--color-header-border);
+  flex: 0 0 auto;
 }
 
 .app-header__brand {
@@ -332,6 +336,22 @@ ul, ol {
   gap: var(--space-6);
   width: 100%;
   height: 100%;
+  min-width: 0;
+}
+
+.app-header__brand {
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.app-header__brand .brand {
+  min-width: 0;
+}
+
+.app-header__brand .brand__wordmark {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .app-header__identity {
@@ -988,6 +1008,7 @@ ul, ol {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 .chat-conversation__badge {
   font-size: var(--fs-xs);
@@ -1020,6 +1041,7 @@ ul, ol {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 .chat-main__subtitle {
   font-size: var(--fs-xs);
@@ -1147,6 +1169,7 @@ ul, ol {
 }
 .chat-composer__input {
   flex: 1;
+  min-width: 0;
   min-height: 2.5rem;
   max-height: 10rem;
   padding: var(--space-3);
@@ -1157,6 +1180,7 @@ ul, ol {
   font-size: var(--fs-sm);
   font-family: inherit;
   resize: none;
+  overflow-y: auto;
   line-height: var(--lh-normal);
   transition: border-color var(--duration-fast) var(--ease-out),
               box-shadow var(--duration-fast) var(--ease-out);
@@ -1836,6 +1860,7 @@ ul, ol {
     flex-direction: column;
     align-items: flex-start;
     text-align: left;
+    padding: var(--space-8);
   }
   .contact-layout {
     grid-template-columns: 1fr;
@@ -1862,42 +1887,115 @@ ul, ol {
 
 @media (max-width: 768px) {
   .app-header {
-    padding: 0 var(--space-5);
+    padding: 0 var(--space-3);
+    gap: var(--space-3);
+  }
+  .app-header__inner {
+    padding: 0 var(--space-3);
     gap: var(--space-3);
   }
   .app-header__nav {
-    margin-left: var(--space-3);
+    margin-left: var(--space-2);
+    gap: 0;
+    min-width: 0;
+  }
+  .app-header__link {
+    height: 1.75rem;
+    padding: 0 var(--space-2);
+    font-size: var(--fs-xs);
+  }
+  .app-header__user {
+    gap: var(--space-2);
+    margin-left: auto;
+    min-width: 0;
   }
   .app-header__user-tag {
     display: none;
   }
+  .app-header__identity {
+    padding: 0 var(--space-2);
+    font-size: 0.6875rem;
+    height: 1.5rem;
+  }
   .app-main__inner {
-    padding: var(--space-10) var(--space-5) var(--space-16);
+    padding: var(--space-8) var(--space-4) var(--space-12);
   }
   .app-footer__inner {
     grid-template-columns: 1fr 1fr;
     gap: var(--space-8);
+  }
+  .app-footer {
+    padding: var(--space-10) var(--space-4) var(--space-8);
   }
   .app-footer__bottom {
     flex-direction: column;
     align-items: flex-start;
     gap: var(--space-2);
   }
+  .landing {
+    padding: 0 var(--space-4) var(--space-12);
+  }
   .landing__title {
     font-size: var(--fs-3xl);
+  }
+  .landing__visual {
+    padding: var(--space-5);
+  }
+  .auth-layout {
+    padding: var(--space-6) var(--space-4);
+    gap: var(--space-6);
   }
   .auth-layout__headline {
     font-size: var(--fs-2xl);
   }
+  .auth-layout__lede {
+    font-size: var(--fs-md);
+  }
   .auth-card {
-    padding: var(--space-6);
+    padding: var(--space-5);
+  }
+  .auth-card__title {
+    font-size: var(--fs-xl);
   }
   .settings-list__row {
     grid-template-columns: 1fr;
     gap: var(--space-1);
+    padding: var(--space-4) 0;
   }
+  .settings-list__row dt {
+    font-size: var(--fs-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-text-muted);
+  }
+  .card {
+    padding: var(--space-5);
+  }
+  .card-grid {
+    grid-template-columns: 1fr;
+    gap: var(--space-4);
+  }
+  .content-page {
+    padding: var(--space-8) var(--space-4) var(--space-12);
+  }
+  .content-page h1 {
+    font-size: var(--fs-2xl);
+  }
+  .not-found {
+    padding: var(--space-12) var(--space-4);
+  }
+  .not-found__code {
+    font-size: 3rem;
+  }
+  /* Chat mobile: conversation list and active conversation swap by data attribute */
   .chat-layout {
     grid-template-columns: 1fr;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    border-top: none;
+    border-bottom: none;
+    box-shadow: none;
   }
   .chat-layout[data-active-peer="true"] .chat-sidebar {
     display: none;
@@ -1905,27 +2003,207 @@ ul, ol {
   .chat-layout[data-active-peer="false"] .chat-main {
     display: none;
   }
+  .chat-sidebar {
+    border-right: none;
+    padding: var(--space-5);
+  }
+  .chat-main__header {
+    padding: var(--space-4) var(--space-5);
+    gap: var(--space-3);
+  }
   .chat-main__back {
     display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .chat-main__title {
+    min-width: 0;
+    flex: 1;
+  }
+  .chat-main__peer {
+    font-size: var(--fs-sm);
+  }
+  .chat-main__meta {
+    gap: var(--space-1);
+    flex-shrink: 0;
+  }
+  .chat-meta-pill {
+    height: 1.5rem;
+    font-size: 0.6875rem;
+    padding: 0 var(--space-2);
+  }
+  .chat-messages {
+    padding: var(--space-5) var(--space-4);
+    gap: var(--space-3);
+  }
+  .chat-composer {
+    padding: var(--space-3) var(--space-4);
+    gap: var(--space-2);
+  }
+  /* Touch-friendly targets on mobile: bump form controls to 44px. */
+  .form__input,
+  .form__textarea {
+    height: 2.75rem;
+    font-size: var(--fs-md);
+  }
+  .form__textarea {
+    min-height: 5.5rem;
+  }
+  .button {
+    height: 2.75rem;
+    font-size: var(--fs-md);
+  }
+  .button--small {
+    height: 2.25rem;
+  }
+  .chat-composer__input {
+    min-height: 2.75rem;
+    font-size: var(--fs-md);
+  }
+  .app-main--app .page--settings {
+    padding: var(--space-6) var(--space-4) var(--space-8);
   }
 }
 
 @media (max-width: 480px) {
-  .app-header {
+  .app-header__inner {
+    padding: 0 var(--space-2);
     gap: var(--space-2);
   }
   .app-header__nav {
     margin-left: 0;
+    gap: 0;
+  }
+  .app-header__link {
+    padding: 0 var(--space-2);
+    font-size: var(--fs-xs);
+  }
+  /* Hide the long brand wordmark at very small widths; the logo icon is enough */
+  .app-header__brand .brand__wordmark {
+    display: none;
+  }
+  /* Drop the least-used nav link at very small widths; the chat page is
+     reachable from the landing page and Settings is still available via URL. */
+  .app-header__nav a[href="/settings"] {
+    display: none;
+  }
+  .app-header__identity {
+    /* Hide the status pill text on tiny screens; the dot is enough */
+    padding: 0;
+    width: 0.875rem;
+    height: 0.875rem;
+    overflow: hidden;
+    border: none;
+    color: transparent;
+  }
+  .app-header__identity::before {
+    margin-right: 0;
   }
   .landing__meta {
     flex-direction: column;
     gap: var(--space-2);
   }
+  .landing__title {
+    font-size: var(--fs-2xl);
+  }
+  .landing__hero {
+    padding: var(--space-6) 0;
+  }
   .app-footer__inner {
     grid-template-columns: 1fr;
+    gap: var(--space-6);
   }
   .service-status {
     flex-direction: column;
     align-items: flex-start;
   }
+  .auth-layout__headline {
+    font-size: var(--fs-xl);
+  }
+  .auth-layout__lede {
+    font-size: var(--fs-md);
+  }
+  .auth-card {
+    padding: var(--space-4);
+  }
+  .form__actions .button {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .form__actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .chat-main__header {
+    padding: var(--space-3) var(--space-4);
+  }
+  .chat-main__meta {
+    flex-wrap: nowrap;
+  }
+  /* On the smallest screens, drop the encryption-status pill in the header
+     to make room for the connection pill and close button. */
+  .chat-main__meta .chat-meta-pill:not([data-testid="connection-state"]) {
+    display: none;
+  }
+  .chat-messages {
+    padding: var(--space-4) var(--space-3);
+  }
+  .chat-composer {
+    padding: var(--space-3);
+  }
+  .chat-composer .button {
+    padding: 0 var(--space-3);
+  }
+  .how-step,
+  .feature-card {
+    padding: var(--space-5);
+  }
+  .cta-banner {
+    padding: var(--space-5);
+    margin-top: var(--space-10);
+  }
+  .cta-banner__actions {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+  }
+  .cta-banner__actions .button {
+    width: 100%;
+  }
+  .not-found {
+    padding: var(--space-10) var(--space-4);
+  }
+  .not-found__code {
+    font-size: 2.5rem;
+  }
+  .card {
+    padding: var(--space-4);
+  }
+  .content-page__header {
+    padding-bottom: var(--space-6);
+    margin-bottom: var(--space-6);
+  }
+  .content-page__section {
+    padding-top: var(--space-6);
+  }
+}
+
+/* Hide the redundant Sign-in nav link at the very smallest widths; the
+   link is still reachable from the registration card on mobile. */
+@media (max-width: 360px) {
+  .app-header__user a[href="/login"] {
+    display: none;
+  }
+  .app-header__inner {
+    padding: 0 var(--space-2);
+    gap: var(--space-1);
+  }
+  .app-header__link {
+    padding: 0 var(--space-2);
+  }
+}
+
+/* Prevent horizontal scroll on the whole document. */
+html, body {
+  overflow-x: hidden;
 }

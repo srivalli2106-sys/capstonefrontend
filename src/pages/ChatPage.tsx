@@ -216,7 +216,7 @@ export function ChatPage(): JSX.Element {
                 onClick={() => setActivePeer(null)}
                 aria-label="Back to conversations"
               >
-                ‹ Conversations
+                ‹ Back
               </button>
               <div className="chat-main__title">
                 {activePeer === null ? (
