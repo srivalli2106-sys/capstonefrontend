@@ -1,20 +1,9 @@
 /**
- * ChatPage — one-to-one encrypted messaging UI (Phase 8).
+ * ChatPage — one-to-one encrypted messaging UI.
  *
- * Layout (functional, not final-UX):
- *
- *   ┌─────────── sidebar ────────────┐┌───────── active conversation ─────────┐
- *   │ [+] New conversation              ││ Connection: Connected                │
- *   │ ──────────                        ││ Encryption: End-to-end encrypted     │
- *   │ alice (latest activity)           ││ ────────────────────────────────────  │
- *   │ bob                              ││ [bob]   hello                  12:01 │
- *   │                                   ││ [alice] hi                     12:02 │
- *   │                                   ││ ────────────────────────────────────  │
- *   │                                   ││ [Type a message…            ] [Send]  │
- *   └───────────────────────────────────┘└────────────────────────────────────────┘
- *
- * Encryption is enforced end-to-end via `ChatController` + `E2EESession`;
- * the WebSocket transport only ever sees opaque base64url ciphertext.
+ * The encryption logic is owned by `ChatController` + `E2EESession`. The
+ * WebSocket transport only ever sees opaque base64url ciphertext. This file
+ * is presentation-only and never mutates crypto state directly.
  */
 
 import type { FormEvent, JSX } from 'react';
@@ -137,40 +126,47 @@ export function ChatPage(): JSX.Element {
   const identityLocked = identity.kind !== 'unlocked';
 
   return (
-    <section className="page page--chat">
-      <h1>Chat</h1>
-
+    <div className="page page--full page--chat">
       {!authenticated ? (
         <p className="page__lede">Sign in to start a conversation.</p>
       ) : (
-        <div className="chat-layout" data-testid="chat-layout">
+        <div
+          className="chat-layout"
+          data-testid="chat-layout"
+          data-active-peer={activePeer === null ? 'false' : 'true'}
+        >
           <aside className="chat-sidebar" aria-label="Conversations">
+            <div className="chat-sidebar__heading">
+              <span>Conversations</span>
+              <span className="muted" style={{ fontWeight: 400, textTransform: 'none' }}>
+                {chat.conversations.length}
+              </span>
+            </div>
+
             <form className="form form--inline" onSubmit={handleOpen}>
-              <label className="form__field">
-                <span className="form__label">Start with user_id</span>
-                <div className="form__row">
-                  <input
-                    className="form__input"
-                    name="new_peer"
-                    type="text"
-                    placeholder="recipient user_id"
-                    minLength={3}
-                    maxLength={64}
-                    autoComplete="off"
-                    value={targetInput}
-                    onChange={(e) => setTargetInput(e.target.value)}
-                    disabled={identityLocked || ctrl === null}
-                  />
-                  <button
-                    type="submit"
-                    className="button button--primary"
-                    disabled={targetInput.trim().length < 3 || identityLocked || ctrl === null || opening}
-                    data-testid="open-conversation"
-                  >
-                    {opening ? 'Opening…' : 'Open'}
-                  </button>
-                </div>
-              </label>
+              <div className="form__row" style={{ width: '100%' }}>
+                <input
+                  className="form__input"
+                  name="new_peer"
+                  type="text"
+                  placeholder="Recipient user_id"
+                  minLength={3}
+                  maxLength={64}
+                  autoComplete="off"
+                  value={targetInput}
+                  onChange={(e) => setTargetInput(e.target.value)}
+                  disabled={identityLocked || ctrl === null}
+                  aria-label="Recipient user identifier"
+                />
+                <button
+                  type="submit"
+                  className="button button--primary button--small"
+                  disabled={targetInput.trim().length < 3 || identityLocked || ctrl === null || opening}
+                  data-testid="open-conversation"
+                >
+                  {opening ? 'Opening…' : 'Open'}
+                </button>
+              </div>
             </form>
 
             {identityLocked && (
@@ -181,12 +177,14 @@ export function ChatPage(): JSX.Element {
 
             {sendError !== null && (
               <div className="form__error" role="alert" data-testid="open-error">
-                {sendError}
+                <span>{sendError}</span>
               </div>
             )}
 
             {chat.conversations.length === 0 ? (
-              <p className="page__lede">No conversations yet.</p>
+              <p className="page__lede" style={{ fontSize: 'var(--fs-sm)' }}>
+                No conversations yet. Start one above.
+              </p>
             ) : (
               <ul className="chat-conversation-list" role="listbox" aria-label="Active conversations">
                 {chat.conversations.map((c) => (
@@ -199,6 +197,7 @@ export function ChatPage(): JSX.Element {
                       }
                       onClick={() => setActivePeer(c.peerUserId)}
                       data-peer={c.peerUserId}
+                      aria-pressed={c.peerUserId === activePeer}
                     >
                       <span className="chat-conversation__peer">{c.peerUserId}</span>
                       <SessionBadge state={c.session} />
@@ -211,30 +210,76 @@ export function ChatPage(): JSX.Element {
 
           <section className="chat-main" aria-label="Active conversation">
             <header className="chat-main__header">
+              <button
+                type="button"
+                className="chat-main__back"
+                onClick={() => setActivePeer(null)}
+                aria-label="Back to conversations"
+              >
+                ‹ Conversations
+              </button>
               <div className="chat-main__title">
-                {activePeer === null
-                  ? 'Select a conversation'
-                  : `Conversation with ${activePeer}`}
+                {activePeer === null ? (
+                  <span className="chat-main__subtitle">Select a conversation</span>
+                ) : (
+                  <>
+                    <span className="chat-main__peer">{activePeer}</span>
+                    <span className="chat-main__subtitle">
+                      {activeConversation === null
+                        ? 'Establishing secure session…'
+                        : labelForSession(activeConversation.session)}
+                    </span>
+                  </>
+                )}
               </div>
               <div className="chat-main__meta">
-                <span className="chat-meta-pill" data-testid="connection-state">
-                  Connection: {wsState}
-                </span>
-                <span className="chat-meta-pill" data-testid="encryption-state">
-                  {activeConversation === null
-                    ? 'Encryption: —'
-                    : `Encryption: ${labelForSession(activeConversation.session)}`}
-                </span>
-              </div>
-              {activePeer !== null && (
-                <button
-                  type="button"
-                  className="button button--small"
-                  onClick={handleCloseConversation}
+                <span
+                  className="chat-meta-pill"
+                  data-state={wsState}
+                  data-testid="connection-state"
+                  title={`Transport state: ${wsState}`}
                 >
-                  Close conversation
-                </button>
-              )}
+                  {wsState === 'open'
+                    ? 'Connected'
+                    : wsState === 'connecting' || wsState === 'authenticating'
+                      ? 'Connecting…'
+                      : wsState === 'closed'
+                        ? 'Disconnected'
+                        : wsState === 'closing'
+                          ? 'Closing…'
+                          : 'Idle'}
+                </span>
+                {activeConversation !== null && (
+                  <span
+                    className={
+                      'chat-meta-pill ' +
+                      (activeConversation.session.kind === 'ready'
+                        ? 'pill--success'
+                        : activeConversation.session.kind === 'error'
+                          ? 'pill--danger'
+                          : '')
+                    }
+                    data-testid="encryption-state"
+                  >
+                    {activeConversation.session.kind === 'ready'
+                      ? 'Encrypted'
+                      : activeConversation.session.kind === 'error'
+                        ? 'Session error'
+                        : activeConversation.session.kind === 'initiating'
+                          ? 'Establishing…'
+                          : 'No session'}
+                  </span>
+                )}
+                {activePeer !== null && (
+                  <button
+                    type="button"
+                    className="button button--ghost button--small"
+                    onClick={handleCloseConversation}
+                  >
+                    Close
+                  </button>
+                )}
+              </div>
             </header>
 
             <MessageList
@@ -245,7 +290,7 @@ export function ChatPage(): JSX.Element {
 
             {activeConversation?.session.kind === 'error' && (
               <div className="form__error" role="alert" data-testid="session-error">
-                {activeConversation.session.error.message}
+                <span>{activeConversation.session.error.message}</span>
                 {activeConversation.session.error.requestId !== null && (
                   <small className="form__meta">
                     {' '}
@@ -267,7 +312,7 @@ export function ChatPage(): JSX.Element {
                       : activeConversation === null ||
                           activeConversation.session.kind !== 'ready'
                         ? 'Secure session not established'
-                        : 'Type a message'
+                        : 'Type a message — Enter to send, Shift+Enter for newline'
                 }
                 value={composer}
                 onChange={(e) => setComposer(e.target.value)}
@@ -284,7 +329,8 @@ export function ChatPage(): JSX.Element {
                   activeConversation.session.kind !== 'ready'
                 }
                 data-testid="composer-input"
-                rows={2}
+                rows={1}
+                aria-label="Message text"
               />
               <button
                 type="submit"
@@ -304,13 +350,13 @@ export function ChatPage(): JSX.Element {
 
             {sendError !== null && (
               <div className="form__error" role="alert" data-testid="send-error">
-                {sendError}
+                <span>{sendError}</span>
               </div>
             )}
           </section>
         </div>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -337,14 +383,22 @@ function MessageList({
   if (conversation === null) {
     return (
       <div className="chat-messages chat-messages--empty" data-testid="message-list">
-        <p className="page__lede">Open a conversation to start chatting.</p>
+        <div className="chat-empty">
+          <div className="chat-empty__title">No conversation selected</div>
+          <p>Open a conversation from the sidebar to start exchanging encrypted messages.</p>
+        </div>
       </div>
     );
   }
   return (
     <div className="chat-messages" ref={ref} data-testid="message-list">
       {conversation.messages.length === 0 ? (
-        <p className="page__lede">No messages yet.</p>
+        <div className="chat-messages--empty">
+          <div className="chat-empty">
+            <div className="chat-empty__title">No messages yet</div>
+            <p>This conversation is empty. Send the first message below.</p>
+          </div>
+        </div>
       ) : (
         <ul className="chat-message-list">
           {conversation.messages.map((m) => (
@@ -376,7 +430,7 @@ function MessageBubble({
       data-testid="message-bubble"
       data-outgoing={outgoing ? 'true' : 'false'}
     >
-      <div className="chat-bubble__sender">{outgoing ? 'you' : message.senderUserId}</div>
+      <div className="chat-bubble__sender">{outgoing ? 'You' : message.senderUserId}</div>
       <div className="chat-bubble__text" data-testid="message-text">
         {message.plaintext}
       </div>
@@ -389,7 +443,7 @@ function MessageBubble({
             {message.status === 'sent' && 'sent'}
             {message.status === 'failed' && (
               <>
-                {'send failed'}
+                <span className="chat-bubble__status--failed">send failed</span>
                 {onRetry && (
                   <button
                     type="button"

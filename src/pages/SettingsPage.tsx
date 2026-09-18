@@ -1,7 +1,7 @@
 /**
  * Settings page.
  *
- * Phase 3 surfaces:
+ * Surfaces existing-only state:
  *  - JWT session info (user_id, expiry).
  *  - Local identity info (public key short id, locked/unlocked).
  *  - Lock identity (drops the in-memory seed; JWT untouched).
@@ -105,88 +105,115 @@ export function SettingsPage(): JSX.Element {
         });
 
   return (
-    <section className="page page--settings">
+    <div className="page">
       <h1>Settings</h1>
       <p className="page__lede">
         Manage the local session and the device-stored encrypted identity.
       </p>
 
-      <h2 className="page__h2">Session</h2>
-      <dl className="settings-list">
-        <div className="settings-list__row">
-          <dt>user_id</dt>
-          <dd>
-            <code>{userId ?? '—'}</code>
-          </dd>
-        </div>
-        <div className="settings-list__row">
-          <dt>authenticated</dt>
-          <dd>{authenticated ? 'yes' : 'no'}</dd>
-        </div>
-        <div className="settings-list__row">
-          <dt>token expiry</dt>
-          <dd>{expiryText}</dd>
-        </div>
-      </dl>
-
-      <h2 className="page__h2">Local identity</h2>
-      <dl className="settings-list">
-        <div className="settings-list__row">
-          <dt>status</dt>
-          <dd>{identityLabel(identity)}</dd>
-        </div>
-        {identity.kind !== 'none' && (
+      <section className="card" aria-labelledby="settings-session">
+        <header className="card__header">
+          <div>
+            <h2 id="settings-session" className="card__title">Session</h2>
+            <p className="card__subtitle">Backend authentication token currently held by this device.</p>
+          </div>
+        </header>
+        <dl className="settings-list">
           <div className="settings-list__row">
-            <dt>ik_public</dt>
+            <dt>User identifier</dt>
+            <dd><code>{userId ?? '—'}</code></dd>
+          </div>
+          <div className="settings-list__row">
+            <dt>Authenticated</dt>
             <dd>
-              <code>{identity.publicKeyShortId}…</code>
-              <span className="settings-list__meta">
-                {' '}(first 12 hex chars; full key is held only in memory)
+              <span className={'pill ' + (authenticated ? 'pill--success' : 'pill--warning')}>
+                {authenticated ? 'Yes' : 'No'}
               </span>
             </dd>
           </div>
-        )}
-      </dl>
+          <div className="settings-list__row">
+            <dt>Token expiry</dt>
+            <dd>{expiryText}</dd>
+          </div>
+        </dl>
+      </section>
 
-      <h2 className="page__h2">X3DH key bundle</h2>
-      {identity.kind !== 'unlocked' ? (
-        <p className="page__lede">Unlock your identity to view device keys.</p>
-      ) : keyStatus.kind === 'not_provisioned' ? (
-        <p className="page__lede">No X25519 device key material yet.</p>
-      ) : (
-        <>
-          <dl className="settings-list">
+      <section className="card" style={{ marginTop: 'var(--space-5)' }} aria-labelledby="settings-identity">
+        <header className="card__header">
+          <div>
+            <h2 id="settings-identity" className="card__title">Identity</h2>
+            <p className="card__subtitle">Local cryptographic identity, stored encrypted in IndexedDB.</p>
+          </div>
+        </header>
+        <dl className="settings-list">
+          <div className="settings-list__row">
+            <dt>Status</dt>
+            <dd>
+              <span className={
+                'pill ' +
+                (identity.kind === 'unlocked' ? 'pill--success' :
+                 identity.kind === 'locked' ? 'pill--warning' : '')
+              }>
+                {identityLabel(identity)}
+              </span>
+            </dd>
+          </div>
+          {identity.kind !== 'none' && (
             <div className="settings-list__row">
-              <dt>IKX (X3DH identity)</dt>
+              <dt>Identity key</dt>
               <dd>
-                <code>{keyStatus.local.ikxPublicHex.slice(0, 12)}…</code>
+                <code>{identity.publicKeyShortId}…</code>
+                <span className="settings-list__meta">
+                  {' '}(first 12 hex chars; full key is held only in memory)
+                </span>
               </dd>
-            </div>
-            <div className="settings-list__row">
-              <dt>SPK (signed prekey)</dt>
-              <dd>
-                <code>{keyStatus.local.spkPublicHex.slice(0, 12)}…</code>
-              </dd>
-            </div>
-            <div className="settings-list__row">
-              <dt>OPK (one-time prekey)</dt>
-              <dd>
-                {keyStatus.local.opkPublicHex === null
-                  ? 'none'
-                  : `${keyStatus.local.opkPublicHex.slice(0, 12)}…`}
-              </dd>
-            </div>
-          </dl>
-          {keyStatus.kind === 'upload_blocked' && (
-            <div className="form__error" role="alert">
-              <span>{keyStatus.reason}</span>
             </div>
           )}
-        </>
+        </dl>
+      </section>
+
+      {identity.kind === 'unlocked' && (
+        <section className="card" style={{ marginTop: 'var(--space-5)' }} aria-labelledby="settings-keys">
+          <header className="card__header">
+            <div>
+              <h2 id="settings-keys" className="card__title">X3DH key bundle</h2>
+              <p className="card__subtitle">Short identifiers of the X25519 keys used to establish sessions.</p>
+            </div>
+          </header>
+          {keyStatus.kind === 'not_provisioned' ? (
+            <p className="muted" style={{ marginTop: 'var(--space-3)' }}>No X25519 device key material yet.</p>
+          ) : (
+            <>
+              <dl className="settings-list">
+                <div className="settings-list__row">
+                  <dt>IKX (X3DH identity)</dt>
+                  <dd><code>{keyStatus.local.ikxPublicHex.slice(0, 12)}…</code></dd>
+                </div>
+                <div className="settings-list__row">
+                  <dt>SPK (signed prekey)</dt>
+                  <dd><code>{keyStatus.local.spkPublicHex.slice(0, 12)}…</code></dd>
+                </div>
+                <div className="settings-list__row">
+                  <dt>OPK (one-time prekey)</dt>
+                  <dd>
+                    {keyStatus.local.opkPublicHex === null
+                      ? <span className="muted">none</span>
+                      : <code>{keyStatus.local.opkPublicHex.slice(0, 12)}…</code>}
+                  </dd>
+                </div>
+              </dl>
+              {keyStatus.kind === 'upload_blocked' && (
+                <div className="form__error" role="alert" style={{ marginTop: 'var(--space-4)' }}>
+                  <span>{keyStatus.reason}</span>
+                </div>
+              )}
+            </>
+          )}
+        </section>
       )}
 
       {error !== null && (
-        <div className="form__error" role="alert">
+        <div className="form__error" role="alert" style={{ marginTop: 'var(--space-5)' }}>
           <span>{error.message}</span>
           {error.requestId !== null && (
             <small className="form__meta">
@@ -196,21 +223,28 @@ export function SettingsPage(): JSX.Element {
         </div>
       )}
 
-      <div className="form__actions">
-        {identity.kind === 'unlocked' && (
-          <button
-            type="button"
-            className="button"
-            onClick={performLock}
-            disabled={action.kind !== 'idle'}
-          >
-            Lock identity
-          </button>
-        )}
-        {identity.kind === 'locked' && (
-          <form className="form form--inline" onSubmit={performUnlock}>
-            <label className="form__field">
-              <span className="form__label">Passphrase to unlock</span>
+      <section className="card" style={{ marginTop: 'var(--space-5)' }} aria-labelledby="settings-actions">
+        <header className="card__header">
+          <div>
+            <h2 id="settings-actions" className="card__title">Actions</h2>
+            <p className="card__subtitle">Lock the in-memory identity, unlock it with your passphrase, or sign out.</p>
+          </div>
+        </header>
+
+        <div className="form__actions" style={{ marginTop: 'var(--space-4)' }}>
+          {identity.kind === 'unlocked' && (
+            <button
+              type="button"
+              className="button"
+              onClick={performLock}
+              disabled={action.kind !== 'idle'}
+            >
+              {action.kind === 'lock' ? 'Locking…' : 'Lock identity'}
+            </button>
+          )}
+
+          {identity.kind === 'locked' && (
+            <form className="form form--inline" onSubmit={performUnlock}>
               <div className="form__row">
                 <input
                   className="form__input"
@@ -219,39 +253,46 @@ export function SettingsPage(): JSX.Element {
                   required
                   value={unlockPassphrase}
                   onChange={(e) => setUnlockPassphrase(e.target.value)}
+                  placeholder="Passphrase"
                   disabled={action.kind !== 'idle'}
+                  aria-label="Identity passphrase"
                 />
                 <button
                   type="submit"
                   className="button button--primary"
-                  disabled={
-                    action.kind !== 'idle' || unlockPassphrase.length === 0
-                  }
+                  disabled={action.kind !== 'idle' || unlockPassphrase.length === 0}
                 >
                   {action.kind === 'unlock' ? 'Unlocking…' : 'Unlock'}
                 </button>
               </div>
-            </label>
-          </form>
-        )}
-        <button
-          type="button"
-          className="button"
-          onClick={performWipe}
-          disabled={action.kind !== 'idle' || identity.kind === 'none'}
-        >
-          {action.kind === 'wipe' ? 'Wiping…' : 'Wipe local identity'}
-        </button>
-        <button
-          type="button"
-          className="button"
-          onClick={performLogout}
-          disabled={!authenticated || action.kind !== 'idle'}
-        >
-          {action.kind === 'logout' ? 'Signing out…' : 'Sign out'}
-        </button>
-      </div>
-    </section>
+            </form>
+          )}
+
+          <button
+            type="button"
+            className="button"
+            onClick={performWipe}
+            disabled={action.kind !== 'idle' || identity.kind === 'none'}
+          >
+            {action.kind === 'wipe' ? 'Wiping…' : 'Wipe local identity'}
+          </button>
+
+          <button
+            type="button"
+            className="button button--danger"
+            onClick={performLogout}
+            disabled={!authenticated || action.kind !== 'idle'}
+          >
+            {action.kind === 'logout' ? 'Signing out…' : 'Sign out'}
+          </button>
+        </div>
+      </section>
+
+      <p className="page__meta">
+        Private keys and message content are never accessible to the server.
+        Wiping the local identity does not delete the server-side account.
+      </p>
+    </div>
   );
 }
 

@@ -1,6 +1,16 @@
+/**
+ * AppShell — application chrome.
+ *
+ * Renders the top navigation, the routed page content (via <Outlet />), and a
+ * structured footer with product, security, privacy, and placeholder legal
+ * links. The navbar adapts on small screens: protected links collapse behind
+ * a back/menu affordance.
+ */
+
 import type { JSX } from 'react';
-import { NavLink, Outlet } from 'react-router-dom';
+import { Link, NavLink, Outlet } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { Logo } from './Logo';
 
 interface NavItem {
   readonly to: string;
@@ -26,8 +36,11 @@ export function AppShell(): JSX.Element {
 
   return (
     <div className="app-shell">
-      <header className="app-header">
-        <div className="app-header__brand">Secure Messaging</div>
+      <header className="app-header" role="banner">
+        <Link to="/" className="app-header__brand" aria-label="Secure Messaging home">
+          <Logo size={26} />
+        </Link>
+
         <nav className="app-header__nav" aria-label="Primary">
           {NAV_ITEMS.map((item) => {
             if (item.protected && !authenticated) return null;
@@ -47,12 +60,14 @@ export function AppShell(): JSX.Element {
             );
           })}
         </nav>
+
         <div className="app-header__user">
           {authenticated ? (
             <>
               <span
                 className={`app-header__identity app-header__identity--${identityBadge.replace(' ', '-')}`}
                 title={`Local identity: ${identityBadge}`}
+                aria-label={`Identity status: ${identityBadge}`}
               >
                 {identityBadge}
               </span>
@@ -61,19 +76,67 @@ export function AppShell(): JSX.Element {
               </span>
             </>
           ) : (
-            <NavLink to="/login" className="app-header__link">
-              Sign in
-            </NavLink>
+            <>
+              <NavLink to="/login" className="app-header__link">
+                Sign in
+              </NavLink>
+              <NavLink to="/register" className="button button--primary button--small">
+                Create account
+              </NavLink>
+            </>
           )}
         </div>
       </header>
 
-      <main className="app-main">
+      <main className="app-main" id="main-content">
         <Outlet />
       </main>
 
-      <footer className="app-footer">
-        <small>End-to-end encrypted client · Phase 3 foundation</small>
+      <footer className="app-footer" role="contentinfo">
+        <div className="app-footer__inner">
+          <div className="app-footer__brand">
+            <Logo size={24} />
+            <p className="app-footer__tagline">
+              End-to-end encrypted, one-to-one messaging with on-device identity.
+              Built on open cryptographic standards.
+            </p>
+          </div>
+
+          <div className="app-footer__col">
+            <h4>Product</h4>
+            <ul>
+              <li><Link to="/chat">Chat</Link></li>
+              <li><Link to="/settings">Settings</Link></li>
+              <li><Link to="/">Overview</Link></li>
+            </ul>
+          </div>
+
+          <div className="app-footer__col">
+            <h4>Security</h4>
+            <ul>
+              <li><span className="muted">End-to-end encryption</span></li>
+              <li><span className="muted">On-device identity keys</span></li>
+              <li><span className="muted">Forward secrecy</span></li>
+            </ul>
+          </div>
+
+          <div className="app-footer__col">
+            <h4>Legal &amp; support</h4>
+            <ul>
+              <li><span className="muted">Privacy — placeholder</span></li>
+              <li><span className="muted">Terms — placeholder</span></li>
+              <li><Link to="/404">Contact</Link></li>
+            </ul>
+          </div>
+        </div>
+
+        <div className="app-footer__bottom">
+          <span>© {new Date().getFullYear()} Secure Messaging</span>
+          <span className="app-footer__tagline">
+            Cryptography is only as strong as its implementation. This product
+            uses audited primitives.
+          </span>
+        </div>
       </footer>
     </div>
   );

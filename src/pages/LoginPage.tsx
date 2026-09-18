@@ -1,7 +1,7 @@
 /**
  * Login page.
  *
- * Phase 3 production flow:
+ * Authentication flow (unchanged across phases):
  *   1. User enters user_id + passphrase.
  *   2. The frontend decrypts the local Ed25519 seed (IndexedDB + PBKDF2 +
  *      AES-GCM).
@@ -64,79 +64,90 @@ export function LoginPage(): JSX.Element {
         : 'Sign in';
 
   return (
-    <section className="page page--login">
-      <h1>Sign in</h1>
-      <p className="page__lede">
-        Authentication uses a proof-of-possession signature over a server
-        challenge. The signing key lives only on this device.
-      </p>
+    <div className="page page--narrow">
+      <section className="auth-card" aria-labelledby="login-title">
+        <h1 id="login-title" className="auth-card__title">Sign in</h1>
+        <p className="auth-card__lede">
+          Authentication uses a proof-of-possession signature over a server
+          challenge. Your signing key lives only on this device.
+        </p>
 
-      <form className="form" onSubmit={handleSubmit} noValidate>
-        <label className="form__field">
-          <span className="form__label">user_id</span>
-          <input
-            className="form__input"
-            type="text"
-            name="user_id"
-            autoComplete="username"
-            minLength={3}
-            maxLength={64}
-            required
-            value={userId}
-            onChange={(e) => setUserId(e.target.value)}
-            disabled={submitting}
-          />
-          <small className="form__hint">3 to 64 characters.</small>
-          {hasLocal === false && userId.trim().length >= 3 && (
-            <small className="form__hint form__hint--warn">
-              No local identity for this user_id on this device.{' '}
-              <Link to="/register">Register instead.</Link>
-            </small>
-          )}
-        </label>
+        <hr className="auth-card__divider" />
 
-        <label className="form__field">
-          <span className="form__label">Identity passphrase</span>
-          <input
-            className="form__input"
-            type="password"
-            name="passphrase"
-            autoComplete="current-password"
-            required
-            value={passphrase}
-            onChange={(e) => setPassphrase(e.target.value)}
-            disabled={submitting}
-          />
-          <small className="form__hint">
-            Used to unlock the locally-stored Ed25519 private key.
-          </small>
-        </label>
-
-        {status.kind === 'error' && (
-          <div className="form__error" role="alert">
-            <span>{status.message}</span>
-            {status.requestId !== null && (
-              <small className="form__meta">
-                request_id: <code>{status.requestId}</code>
+        <form className="form" onSubmit={handleSubmit} noValidate>
+          <label className="form__field">
+            <span className="form__label">User identifier</span>
+            <input
+              className="form__input"
+              type="text"
+              name="user_id"
+              autoComplete="username"
+              minLength={3}
+              maxLength={64}
+              required
+              value={userId}
+              onChange={(e) => setUserId(e.target.value)}
+              disabled={submitting}
+              placeholder="e.g. alice"
+              aria-describedby="userid-hint"
+            />
+            <small id="userid-hint" className="form__hint">3 to 64 characters.</small>
+            {hasLocal === false && userId.trim().length >= 3 && (
+              <small className="form__hint form__hint--warn" role="status">
+                No local identity for this user on this device.{' '}
+                <Link to="/register">Register instead.</Link>
               </small>
             )}
-          </div>
-        )}
+          </label>
 
-        <div className="form__actions">
-          <button
-            type="submit"
-            className="button button--primary"
-            disabled={submitting || userId.trim().length < 3 || passphrase.length === 0}
-          >
-            {submitLabel}
-          </button>
-          <Link className="button" to="/register">
-            Create account
-          </Link>
-        </div>
-      </form>
-    </section>
+          <label className="form__field">
+            <span className="form__label">Identity passphrase</span>
+            <input
+              className="form__input"
+              type="password"
+              name="passphrase"
+              autoComplete="current-password"
+              required
+              value={passphrase}
+              onChange={(e) => setPassphrase(e.target.value)}
+              disabled={submitting}
+              placeholder="Your local passphrase"
+            />
+            <small className="form__hint">
+              Used to unlock the locally-stored Ed25519 private key.
+            </small>
+          </label>
+
+          {status.kind === 'error' && (
+            <div className="form__error" role="alert">
+              <span>{status.message}</span>
+              {status.requestId !== null && (
+                <small className="form__meta">
+                  request_id: <code>{status.requestId}</code>
+                </small>
+              )}
+            </div>
+          )}
+
+          <div className="form__actions">
+            <button
+              type="submit"
+              className="button button--primary"
+              disabled={submitting || userId.trim().length < 3 || passphrase.length === 0}
+            >
+              {submitLabel}
+            </button>
+            <Link className="button button--ghost" to="/register">
+              Create account
+            </Link>
+          </div>
+        </form>
+
+        <p className="auth-card__alt">
+          New here? <Link to="/register">Create an account</Link>.
+        </p>
+      </section>
+    </div>
   );
 }
 
