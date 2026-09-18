@@ -1,18 +1,19 @@
 /**
  * Centralized, typed HTTP client.
  *
- * Responsibilities (Phase 1):
+ * Responsibilities:
  *  - Build URLs from the configured API base URL.
  *  - Issue JSON requests and parse JSON responses.
  *  - Apply a per-request timeout via AbortController.
  *  - Surface a typed `ApiError` for non-2xx responses.
  *  - Capture the backend's `X-Request-ID` correlation header.
+ *  - (Phase 2) Optionally attach a Bearer token. Notify a single registered
+ *    handler on 401 so the AuthController can clear stale credentials.
  *
  * Explicit non-responsibilities (later phases):
- *  - No auth header injection.
  *  - No token refresh.
  *  - No retry loop.
- *  - No global state mutation.
+ *  - No global state mutation beyond the 401 hook.
  */
 
 import { config } from '../config/env';
@@ -50,6 +51,19 @@ export interface ApiSuccess<T> {
 export interface HttpRequestOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
+  /**
+   * Bearer token. Pass a non-empty string to send
+   * `Authorization: Bearer <token>`; pass `null`/`undefined` to omit.
+   */
+  authToken?: string | null;
+}
+
+type UnauthorizedHandler = (info: { path: string }) => void;
+
+let onUnauthorized: UnauthorizedHandler | null = null;
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  onUnauthorized = handler;
 }
 
 function joinUrl(base: string, path: string): string {
@@ -146,6 +160,9 @@ async function request<T>(
   const headers: Record<string, string> = {
     Accept: 'application/json',
   };
+  if (typeof opts.authToken === 'string' && opts.authToken.length > 0) {
+    headers['Authorization'] = `Bearer ${opts.authToken}`;
+  }
   let serializedBody: string | undefined;
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
@@ -192,6 +209,13 @@ async function request<T>(
 
   if (!response.ok) {
     const { code, message } = await parseErrorBody(response);
+    if (response.status === 401 && onUnauthorized !== null) {
+      try {
+        onUnauthorized({ path });
+      } catch {
+        // Never let handler exceptions mask the original API error.
+      }
+    }
     throw new ApiError({
       status: response.status,
       statusText: response.statusText,
