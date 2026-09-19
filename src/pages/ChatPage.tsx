@@ -2,12 +2,14 @@
  * ChatPage — one-to-one encrypted messaging UI.
  *
  * The encryption logic is owned by `ChatController` + `E2EESession`. The
- * WebSocket transport only ever sees opaque base64url ciphertext. This file
- * is presentation-only and never mutates crypto state directly.
+ * WebSocket transport only ever sees opaque base64url ciphertext. Local
+ * history is RESTORED from the encrypted at-rest store by the controller and
+ * rendered here; the UI never writes message content to storage directly.
+ * This file is presentation-only and never mutates crypto state directly.
  */
 
 import type { FormEvent, JSX } from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { authController } from '../auth/AuthController';
 import { getWebSocketController } from '../realtime/setup';
 import { useAuth } from '../hooks/useAuth';
@@ -24,6 +26,7 @@ import { getOrCreateChatController } from '../realtime/ChatController';
 import type { ConnectionState } from '../realtime/types';
 import {
   formatConversationTimestamp,
+  formatDaySeparator,
   formatMessageTimestamp,
   formatMessageTimestampLong,
 } from '../realtime/timeFormat';
@@ -35,6 +38,24 @@ const TYPING_START_INTERVAL_MS = 1500;
 const TYPING_STOP_AFTER_MS = 2000;
 /** Presence poll cadence. */
 const PRESENCE_POLL_INTERVAL_MS = 30_000;
+/** Auto-disarm the "Delete conversation" confirmation. */
+const DELETE_CONFIRM_TIMEOUT_MS = 8000;
+/** Pixel distance from the bottom that counts as "stuck to latest". */
+const SCROLL_STICK_THRESHOLD_PX = 48;
+
+/**
+ * Day key for date separators — collapses a timestamp to its calendar day.
+ */
+function dayKey(ts: number): string {
+  return new Date(ts).toDateString();
+}
+
+/** Safe preview line for the conversation list (already-decrypted local copy). */
+function conversationPreview(conversation: ConversationSnapshot): string {
+  const last = conversation.messages[conversation.messages.length - 1];
+  if (last === undefined) return 'End-to-end encrypted';
+  return last.outgoing ? `You: ${last.plaintext}` : last.plaintext;
+}
 
 export function ChatPage(): JSX.Element {
   const { authenticated, userId, identity } = useAuth();
@@ -46,6 +67,8 @@ export function ChatPage(): JSX.Element {
   const [sendError, setSendError] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Resolve the active ChatController once setup has run.
   const ctrl: ChatController | null = useMemo(() => {
@@ -198,6 +221,22 @@ export function ChatPage(): JSX.Element {
     [targetInput, ctrl, userId],
   );
 
+  /**
+   * Opening a conversation from the list. Navigates to it AND (re)establishes
+   * the E2EE session on demand — after a reload the restored history has no
+   * live session until this runs.
+   */
+  const handleOpenConversation = useCallback(
+    (peer: string) => {
+      setActivePeer(peer);
+      if (ctrl === null) return;
+      void ctrl.openConversation(peer).catch((err) => {
+        setSendError(safeErrorMessage(err, 'Could not open conversation.'));
+      });
+    },
+    [ctrl],
+  );
+
   const handleSend = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
@@ -221,12 +260,6 @@ export function ChatPage(): JSX.Element {
     [activePeer, composer, ctrl, clearTypingTimer, stopTypingFor],
   );
 
-  const handleCloseConversation = useCallback(() => {
-    if (activePeer === null || ctrl === null) return;
-    ctrl.closeConversation(activePeer);
-    setActivePeer(null);
-  }, [activePeer, ctrl]);
-
   const handleRetry = useCallback(
     async (peerUserId: string, failedPlaintext: string) => {
       if (ctrl === null) return;
@@ -238,6 +271,53 @@ export function ChatPage(): JSX.Element {
       }
     },
     [ctrl],
+  );
+
+  // ---- Delete conversation (local only, two-step confirm) --------------
+  const clearDeleteTimer = useCallback(() => {
+    if (deleteTimerRef.current !== null) {
+      clearTimeout(deleteTimerRef.current);
+      deleteTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearDeleteTimer();
+    };
+  }, [clearDeleteTimer]);
+
+  const requestDeleteConversation = useCallback(
+    (peer: string) => {
+      if (deleteConfirm === peer) return; // already armed for this peer
+      setDeleteConfirm(peer);
+      clearDeleteTimer();
+      deleteTimerRef.current = setTimeout(() => {
+        setDeleteConfirm((current) => (current === peer ? null : current));
+        deleteTimerRef.current = null;
+      }, DELETE_CONFIRM_TIMEOUT_MS);
+    },
+    [deleteConfirm, clearDeleteTimer],
+  );
+
+  const cancelDeleteConversation = useCallback(() => {
+    clearDeleteTimer();
+    setDeleteConfirm(null);
+  }, [clearDeleteTimer]);
+
+  const confirmDeleteConversation = useCallback(
+    async (peer: string) => {
+      cancelDeleteConversation();
+      if (ctrl === null) return;
+      try {
+        await ctrl.deleteConversation(peer);
+      } catch {
+        // Best-effort: the in-memory conversation stays if storage cleanup
+        // failed; nothing is sent over the wire either way.
+      }
+      setActivePeer((current) => (current === peer ? null : current));
+    },
+    [ctrl, cancelDeleteConversation],
   );
 
   // Identify / lock state.
@@ -311,7 +391,15 @@ export function ChatPage(): JSX.Element {
               </div>
             )}
 
-            {filteredConversations.length === 0 ? (
+            {!chat.historyLoaded ? (
+              <p
+                className="page__lede"
+                style={{ fontSize: 'var(--fs-sm)' }}
+                data-testid="chat-loading"
+              >
+                Restoring conversations…
+              </p>
+            ) : filteredConversations.length === 0 ? (
               <p className="page__lede" style={{ fontSize: 'var(--fs-sm)' }}>
                 {chat.conversations.length === 0
                   ? 'No conversations yet. Start one above.'
@@ -327,31 +415,40 @@ export function ChatPage(): JSX.Element {
                         'chat-conversation' +
                         (c.peerUserId === activePeer ? ' chat-conversation--active' : '')
                       }
-                      onClick={() => setActivePeer(c.peerUserId)}
+                      onClick={() => handleOpenConversation(c.peerUserId)}
                       data-peer={c.peerUserId}
                       aria-pressed={c.peerUserId === activePeer}
                     >
-                      <span className="chat-conversation__main">
+                      <span className="chat-conversation__top">
                         <span className="chat-conversation__peer">{c.peerUserId}</span>
                         <span className="chat-conversation__meta">
-                          <PresenceDot state={c.presence} />
                           <span
                             className="chat-conversation__time"
                             data-testid="conversation-time"
                           >
                             {formatConversationTimestamp(c.lastActivityAt)}
                           </span>
-                          {c.unreadCount > 0 && (
-                            <span
-                              className="chat-conversation__unread"
-                              data-testid="unread-badge"
-                            >
-                              {c.unreadCount}
-                            </span>
-                          )}
                         </span>
                       </span>
-                      <SessionBadge state={c.session} />
+                      <span className="chat-conversation__bottom">
+                        <span className="chat-conversation__preview-line">
+                          <PresenceDot state={c.presence} />
+                          <span
+                            className="chat-conversation__preview"
+                            data-testid="conversation-preview"
+                          >
+                            {conversationPreview(c)}
+                          </span>
+                        </span>
+                        {c.unreadCount > 0 && (
+                          <span
+                            className="chat-conversation__unread"
+                            data-testid="unread-badge"
+                          >
+                            {c.unreadCount}
+                          </span>
+                        )}
+                      </span>
                     </button>
                   </li>
                 ))}
@@ -366,6 +463,7 @@ export function ChatPage(): JSX.Element {
                 className="chat-main__back"
                 onClick={() => setActivePeer(null)}
                 aria-label="Back to conversations"
+                data-testid="conversation-back"
               >
                 ‹ Back
               </button>
@@ -422,18 +520,53 @@ export function ChatPage(): JSX.Element {
                 {activePeer !== null && (
                   <button
                     type="button"
-                    className="button button--ghost button--small"
-                    onClick={handleCloseConversation}
+                    className="button button--ghost button--small chat-header-delete"
+                    onClick={() => requestDeleteConversation(activePeer)}
+                    data-testid="delete-conversation"
+                    aria-expanded={deleteConfirm === activePeer}
                   >
-                    Close
+                    Delete
                   </button>
                 )}
               </div>
             </header>
 
+            {deleteConfirm !== null && deleteConfirm === activePeer && (
+              <div
+                className="chat-delete-notice"
+                role="alertdialog"
+                aria-label="Delete conversation?"
+                data-testid="delete-notice"
+              >
+                <span>
+                  Delete this conversation from this device? Messages are removed
+                  locally only — the peer is not notified.
+                </span>
+                <span className="chat-delete-notice__actions">
+                  <button
+                    type="button"
+                    className="button button--ghost button--small"
+                    onClick={cancelDeleteConversation}
+                    data-testid="delete-cancel"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="button button--danger button--small"
+                    onClick={() => void confirmDeleteConversation(deleteConfirm)}
+                    data-testid="delete-confirm"
+                  >
+                    Delete
+                  </button>
+                </span>
+              </div>
+            )}
+
             <MessageList
               conversation={activeConversation}
               selfUserId={userId}
+              historyLoaded={chat.historyLoaded}
               onRetry={handleRetry}
               onDelete={handleDeleteLocally}
             />
@@ -517,20 +650,82 @@ export function ChatPage(): JSX.Element {
 function MessageList({
   conversation,
   selfUserId,
+  historyLoaded,
   onRetry,
   onDelete,
 }: {
   conversation: ConversationSnapshot | null;
   selfUserId: string | null;
+  historyLoaded: boolean;
   onRetry?: (peerUserId: string, plaintext: string) => void;
   onDelete?: (peerUserId: string, messageId: string) => void;
 }): JSX.Element {
   const ref = useRef<HTMLDivElement | null>(null);
+  const stickRef = useRef(true);
+  const prevCountRef = useRef(0);
+  const [newCount, setNewCount] = useState(0);
+
+  const scrollToBottom = useCallback(() => {
+    const el = ref.current;
+    if (el === null) return;
+    window.requestAnimationFrame(() => {
+      if (ref.current !== null) {
+        ref.current.scrollTop = ref.current.scrollHeight;
+      }
+    });
+  }, []);
+
+  const peer = conversation?.peerUserId ?? null;
+  const messageCount = conversation?.messages.length ?? 0;
+
+  // On conversation switch: reset scroll anchors and snap to the latest.
   useEffect(() => {
-    if (ref.current !== null) {
-      ref.current.scrollTop = ref.current.scrollHeight;
+    stickRef.current = true;
+    setNewCount(0);
+    prevCountRef.current = conversation?.messages.length ?? 0;
+    scrollToBottom();
+  }, [peer, conversation, scrollToBottom]);
+
+  const handleScroll = useCallback(() => {
+    const el = ref.current;
+    if (el === null) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickRef.current = distance < SCROLL_STICK_THRESHOLD_PX;
+    if (stickRef.current) {
+      setNewCount(0);
     }
-  }, [conversation?.messages.length]);
+  }, []);
+
+  // React to new messages: auto-scroll when near the bottom, otherwise show
+  // a "N new" chip without yanking the reader away from older messages.
+  useEffect(() => {
+    if (conversation === null) return;
+    const prev = prevCountRef.current;
+    prevCountRef.current = messageCount;
+    if (messageCount <= prev) return;
+    if (stickRef.current) {
+      scrollToBottom();
+    } else {
+      setNewCount((count) => count + 1);
+    }
+  }, [messageCount, conversation, scrollToBottom]);
+
+  const jumpToLatest = useCallback(() => {
+    stickRef.current = true;
+    setNewCount(0);
+    scrollToBottom();
+  }, [scrollToBottom]);
+
+  if (!historyLoaded) {
+    return (
+      <div className="chat-messages chat-messages--empty" data-testid="message-list">
+        <div className="chat-empty">
+          <div className="chat-empty__title">Restoring conversations…</div>
+          <p>Decrypting your local conversation history.</p>
+        </div>
+      </div>
+    );
+  }
 
   if (conversation === null) {
     return (
@@ -542,9 +737,10 @@ function MessageList({
       </div>
     );
   }
+
   return (
-    <div className="chat-messages" ref={ref} data-testid="message-list">
-      {conversation.messages.length === 0 ? (
+    <div className="chat-messages" ref={ref} onScroll={handleScroll} data-testid="message-list">
+      {conversation.messages.length === 0 && !conversation.typing ? (
         <div className="chat-messages--empty">
           <div className="chat-empty">
             <div className="chat-empty__title">No messages yet</div>
@@ -553,22 +749,45 @@ function MessageList({
         </div>
       ) : (
         <ul className="chat-message-list">
-          {conversation.messages.map((m) => (
-            <MessageBubble
-              key={m.id}
-              message={m}
-              selfUserId={selfUserId}
-              peerUserId={conversation.peerUserId}
-              onRetry={onRetry}
-              onDelete={onDelete}
-            />
-          ))}
+          {conversation.messages.map((m, index) => {
+            const previous = conversation.messages[index - 1];
+            const isNewDay =
+              previous === undefined || dayKey(m.createdAt) !== dayKey(previous.createdAt);
+            return (
+              <Fragment key={m.id}>
+                {isNewDay && (
+                  <li className="chat-date" role="separator" data-testid="date-separator">
+                    {formatDaySeparator(m.createdAt)}
+                  </li>
+                )}
+                <MessageBubble
+                  message={m}
+                  selfUserId={selfUserId}
+                  peerUserId={conversation.peerUserId}
+                  onRetry={onRetry}
+                  onDelete={onDelete}
+                />
+              </Fragment>
+            );
+          })}
+          {conversation.typing && <TypingBubble />}
         </ul>
+      )}
+      {newCount > 0 && (
+        <button
+          type="button"
+          className="chat-jump-to-latest"
+          onClick={jumpToLatest}
+          data-testid="jump-to-latest"
+        >
+          {newCount === 1 ? '1 new message' : `${newCount} new messages`} ↓
+        </button>
       )}
     </div>
   );
 }
 
+/** Wraps a bubble with an optional date separator at the day boundary. */
 function MessageBubble({
   message,
   selfUserId,
@@ -582,6 +801,7 @@ function MessageBubble({
   onRetry?: (peerUserId: string, plaintext: string) => void;
   onDelete?: (peerUserId: string, messageId: string) => void;
 }): JSX.Element {
+  const [menuOpen, setMenuOpen] = useState(false);
   const outgoing = message.outgoing || (selfUserId !== null && message.senderUserId === selfUserId);
   const time = formatMessageTimestamp(message.createdAt);
   const fullTime = formatMessageTimestampLong(message.createdAt);
@@ -591,7 +811,19 @@ function MessageBubble({
       data-testid="message-bubble"
       data-outgoing={outgoing ? 'true' : 'false'}
     >
-      <div className="chat-bubble__sender">{outgoing ? 'You' : message.senderUserId}</div>
+      <div className="chat-bubble__header">
+        <span className="chat-bubble__sender">{outgoing ? 'You' : message.senderUserId}</span>
+        <button
+          type="button"
+          className="chat-bubble__menu"
+          onClick={() => setMenuOpen((open) => !open)}
+          aria-label="Message actions"
+          aria-expanded={menuOpen}
+          data-testid="bubble-menu"
+        >
+          …
+        </button>
+      </div>
       <div className="chat-bubble__text" data-testid="message-text">
         {message.plaintext}
       </div>
@@ -621,20 +853,46 @@ function MessageBubble({
           </span>
         )}
       </div>
-      {onDelete !== undefined && (
-        <div className="chat-bubble__actions">
+      {menuOpen && (
+        <>
           <button
             type="button"
-            className="button button--link chat-bubble__delete"
-            onClick={() => onDelete(peerUserId, message.id)}
-            data-testid="delete-locally"
-            title="Deletes this message from this device only — the peer is not notified."
-            aria-label="Delete message locally"
-          >
-            Delete locally
-          </button>
-        </div>
+            className="chat-menu-scrim"
+            aria-label="Close message actions"
+            onClick={() => setMenuOpen(false)}
+          />
+          <div className="chat-bubble__menu-pop" data-testid="bubble-menu-pop">
+            {onDelete !== undefined ? (
+              <button
+                type="button"
+                className="chat-bubble__delete"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onDelete(peerUserId, message.id);
+                }}
+                data-testid="delete-for-me"
+                title="Deletes this message from this device only — the peer is not notified."
+              >
+                Delete for me
+              </button>
+            ) : (
+              <span className="chat-bubble__delete">Delete for me</span>
+            )}
+          </div>
+        </>
       )}
+    </li>
+  );
+}
+
+function TypingBubble(): JSX.Element {
+  return (
+    <li className="chat-bubble chat-bubble--in chat-bubble--typing" data-testid="typing-bubble">
+      <span className="chat-typing-dots" aria-label="Peer is typing…">
+        <i />
+        <i />
+        <i />
+      </span>
     </li>
   );
 }
@@ -663,11 +921,6 @@ function formatHeaderSubtitle(
   if (conversation.presence === 'online') return 'Online';
   if (conversation.presence === 'offline') return 'Offline';
   return 'End-to-end encrypted';
-}
-
-function SessionBadge({ state }: { state: SessionState }): JSX.Element {
-  const label = labelForSession(state);
-  return <span className="chat-conversation__badge">{label}</span>;
 }
 
 function labelForSession(state: SessionState): string {

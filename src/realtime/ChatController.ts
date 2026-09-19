@@ -58,6 +58,13 @@
  *   * Delete locally: `deleteMessageLocally()` removes a message from the
  *     current user's in-memory conversation only. It sends nothing to the
  *     peer and touches no backend state.
+ *   * Local history (Phase 13): the decrypted conversation history is
+ *     persisted ENCRYPTED at rest (AES-256-GCM, key derived from the
+ *     unlocked identity's device key) so it survives a page refresh. Ratch
+ *     state is NEVER persisted — after a reload sessions re-establish via
+ *     `openConversation`. `deleteConversation()` wipes a conversation from
+ *     memory AND from the local encrypted store (local only). The backend
+ *     is never sent plaintext history.
  */
 
 import { type HttpRequestOptions } from '../api/http';
@@ -79,6 +86,12 @@ import {
 import { type InboundEnvelope } from './types';
 import { hexToBytes } from '../crypto/hex';
 import { newMessageId } from './messageId';
+import { createChatHistoryPersistence } from '../persistence/chatStore';
+import type {
+  ChatPersistence,
+  PersistedConversation,
+  PersistedMessage,
+} from '../persistence/types';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -182,6 +195,12 @@ export interface ChatSnapshot {
   /** The current authenticated user id (may be null briefly during logout). */
   selfUserId: string | null;
   conversations: ConversationSnapshot[];
+  /**
+   * True once local history has been restored (or a restore was
+   * attempted/not applicable). The UI renders a loading state until this is
+   * true so restored messages do not flash in.
+   */
+  historyLoaded: boolean;
 }
 
 /** Listener for snapshot updates from the ChatController. */
@@ -194,6 +213,12 @@ export type ChatListener = (snapshot: ChatSnapshot) => void;
 export interface ChatControllerOptions {
   authController: AuthControllerLike;
   webSocketController: WebSocketController;
+  /**
+   * Optional local-history store. Defaults to the IndexedDB-backed encrypted
+   * store; tests can inject a stub or rely on the identity-locked guard to
+   * keep persistence inert.
+   */
+  persistence?: ChatPersistence;
 }
 
 /** Throttle for client message-id generation (avoids ULID collisions on bursts). */
@@ -268,16 +293,30 @@ export class ChatController {
   private static readonly MAX_RECEIVED_IDS = 2048;
   /** The conversation the UI currently has open (drives auto read receipts). */
   private activePeer: string | null = null;
+  /** Local-history store (never null in production; inert while locked). */
+  private readonly persistence: ChatPersistence;
+  /** True once local history has been restored for the current unlock. */
+  private historyLoaded = false;
+  /** Account whose history is currently encrypted/decrypted by the store. */
+  private historySelfUserId: string | null = null;
+  /** Peers whose conversations have unsaved changes. */
+  private readonly dirtyPeers: Set<string> = new Set();
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Debounce window for batched history writes. */
+  private static readonly SAVE_DEBOUNCE_MS = 400;
 
   constructor(options: ChatControllerOptions) {
     this.authController = options.authController;
     this.webSocket = options.webSocketController;
+    this.persistence = options.persistence ?? createChatHistoryPersistence();
     this.unsubscribeAuth = this.authController.subscribe((snap) => {
       // Clear sensitive in-memory sessions on logout OR identity lock.
       // Spec §9 / §13: logout/lock must wipe material and clear state.
       const identity = (snap as { identity?: { kind: string } }).identity;
       if (!snap.authenticated || (identity !== undefined && identity.kind === 'locked')) {
         this.clearAllSessions();
+      } else {
+        void this.maybeHydrate();
       }
       this.notify();
     });
@@ -312,8 +351,16 @@ export class ChatController {
     const authed = this.authController.getToken();
     const self = this.authController.getUserId();
     if (authed === null || self === null) {
-      return { connected: this.webSocket.state === 'open', selfUserId: null, conversations: [] };
+      return {
+        connected: this.webSocket.state === 'open',
+        selfUserId: null,
+        conversations: [],
+        historyLoaded: this.historyLoaded,
+      };
     }
+    // Kick a pending local-history restore whenever the snapshot is read
+    // (cheap guard: no-ops once loaded or while the identity is locked).
+    void this.maybeHydrate();
     const conversations = Array.from(this.conversations.values())
       .map((c) => this.toSnapshot(c))
       .sort((a, b) => b.lastActivityAt - a.lastActivityAt);
@@ -321,6 +368,7 @@ export class ChatController {
       connected: this.webSocket.state === 'open',
       selfUserId: self,
       conversations,
+      historyLoaded: this.historyLoaded,
     };
   }
 
@@ -446,6 +494,7 @@ export class ChatController {
     } finally {
       conv.sending = false;
     }
+    this.markDirty(peerUserId);
     this.notify();
     return outbound;
   }
@@ -465,6 +514,7 @@ export class ChatController {
       this.activePeer = null;
     }
     this.conversations.delete(peerUserId);
+    this.dirtyPeers.delete(peerUserId);
     this.notify();
   }
 
@@ -513,6 +563,39 @@ export class ChatController {
     const index = conv.messages.findIndex((message) => message.id === messageId);
     if (index === -1) return;
     conv.messages.splice(index, 1);
+    this.markDirty(peerUserId);
+    this.notify();
+  }
+
+  /**
+   * Delete a conversation entirely: wipe its in-memory session/messages AND
+   * remove its encrypted record from the local history store. Local-only —
+   * sends nothing to the peer and touches no backend state. After this, the
+   * conversation will NOT reappear on the next reload.
+   */
+  public async deleteConversation(peerUserId: string): Promise<void> {
+    const conv = this.conversations.get(peerUserId);
+    if (conv === undefined) return;
+    if (conv.session !== null) {
+      try {
+        conv.session.wipe();
+      } catch {
+        // Best-effort.
+      }
+    }
+    this.cleanupTypingTimer(conv);
+    if (this.activePeer === peerUserId) {
+      this.activePeer = null;
+    }
+    this.conversations.delete(peerUserId);
+    this.dirtyPeers.delete(peerUserId);
+    if (this.historySelfUserId !== null) {
+      try {
+        await this.persistence.remove(this.historySelfUserId, peerUserId);
+      } catch {
+        // Best-effort: in-memory deletion still stands.
+      }
+    }
     this.notify();
   }
 
@@ -757,6 +840,7 @@ export class ChatController {
       } else {
         conv.unreadCount = (conv.unreadCount ?? 0) + 1;
       }
+      this.markDirty(env.sender);
     } catch (err) {
       const code =
         err && typeof err === 'object' && 'code' in err
@@ -815,6 +899,7 @@ export class ChatController {
       break;
     }
     if (changed) {
+      this.markDirty(env.sender);
       this.notify();
     }
   }
@@ -842,13 +927,19 @@ export class ChatController {
    * acknowledged and reset the unread counter. Best-effort.
    */
   private emitReadReceipts(conv: Conversation): void {
+    let changed = false;
     for (const message of conv.messages) {
       if (message.outgoing || message.readAckSent) continue;
       message.readAckSent = true;
+      changed = true;
       this.sendSignal(conv.peerUserId, 'read_receipt', message.id);
     }
     if ((conv.unreadCount ?? 0) > 0) {
       conv.unreadCount = 0;
+      changed = true;
+    }
+    if (changed) {
+      this.markDirty(conv.peerUserId);
     }
   }
 
@@ -905,6 +996,10 @@ export class ChatController {
   }
 
   private clearAllSessions(): void {
+    // Persist the in-memory history BEFORE wiping it (best-effort: each
+    // save captures the store key synchronously, so this is safe even though
+    // the store is locked right after).
+    this.flushBeforeWipe();
     for (const conv of this.conversations.values()) {
       this.cleanupTypingTimer(conv);
       if (conv.session !== null) {
@@ -919,6 +1014,170 @@ export class ChatController {
     this.outboundMessageIds.clear();
     this.receivedMessageIds.clear();
     this.activePeer = null;
+    if (this.flushTimer !== null) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.dirtyPeers.clear();
+    // Drop the derived storage key: history is only readable while the
+    // identity is unlocked on this device.
+    this.persistence.lock();
+    this.historySelfUserId = null;
+    this.historyLoaded = false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal: local history (Phase 13)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Restore persisted history once per unlock. Missing identity / locked
+   * identity/unknown account → no-op (retried on the next snapshot read or
+   * auth notification).
+   */
+  private maybeHydrate(): void {
+    if (this.historyLoaded) return;
+    const self = this.authController.getUserId();
+    if (self === null) return;
+    const identity = this.authController.getUnlockedIdentity();
+    if (identity === null || identity.deviceKeys === null) return;
+    void this.hydrate(self, identity.deviceKeys.ikxPrivate);
+  }
+
+  private async hydrate(self: string, ikxPrivate: Uint8Array): Promise<void> {
+    try {
+      await this.persistence.unlock(self, ikxPrivate);
+      this.historySelfUserId = self;
+      const restored = await this.persistence.load(self);
+      for (const conversation of restored) {
+        this.restoreConversation(conversation);
+      }
+    } catch {
+      // A storage failure must never break chat: fall back to an empty
+      // in-memory store for this session.
+    }
+    this.historyLoaded = true;
+    this.notify();
+  }
+
+  private restoreConversation(persisted: PersistedConversation): void {
+    const existing = this.conversations.get(persisted.peerUserId);
+    const conv = this.ensureConversation(persisted.peerUserId);
+    if (existing !== undefined) {
+      // Merge into a live conversation: keep the newer activity/unread state.
+      conv.lastActivityAt = Math.max(conv.lastActivityAt, persisted.lastActivityAt);
+      if (persisted.unreadCount > conv.unreadCount) {
+        conv.unreadCount = persisted.unreadCount;
+      }
+    } else {
+      // Fresh restore: the persisted timestamps are authoritative for
+      // ordering (never override with "now").
+      conv.lastActivityAt = persisted.lastActivityAt;
+      conv.unreadCount = persisted.unreadCount;
+    }
+    const incoming = new Set(conv.messages.map((m) => m.id));
+    for (const message of persisted.messages) {
+      if (incoming.has(message.id)) continue;
+      incoming.add(message.id);
+      conv.messages.push(this.toDisplayMessage(message));
+    }
+    conv.messages.sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  /**
+   * Map a stored message back to a `DisplayMessage`. An outbound message
+   * that was persisted while still `sending` is surfaced as `failed` after a
+   * reload (a send interrupted by refresh was never confirmed on the wire,
+   * so we never claim a stale success).
+   */
+  private toDisplayMessage(message: PersistedMessage): DisplayMessage {
+    let status = message.status ?? null;
+    let errorMessage = message.errorMessage;
+    if (message.outgoing === true && status !== 'sent' && status !== 'delivered' && status !== 'read') {
+      status = 'failed';
+      errorMessage =
+        errorMessage ?? 'Send may not have completed on this device before reload.';
+    }
+    return {
+      id: message.id,
+      wireId: message.wireId,
+      senderUserId: message.senderUserId,
+      recipientUserId: message.recipientUserId,
+      plaintext: message.plaintext,
+      createdAt: message.createdAt,
+      outgoing: message.outgoing === true,
+      status,
+      errorMessage,
+      sessionReady: true,
+      readAckSent: message.readAckSent === true,
+    };
+  }
+
+  private serializeConversation(conv: Conversation): PersistedConversation {
+    return {
+      version: 1,
+      peerUserId: conv.peerUserId,
+      messages: conv.messages.map((message) => ({
+        id: message.id,
+        wireId: message.wireId,
+        senderUserId: message.senderUserId,
+        recipientUserId: message.recipientUserId,
+        plaintext: message.plaintext,
+        createdAt: message.createdAt,
+        outgoing: message.outgoing,
+        status: message.status,
+        errorMessage: message.errorMessage,
+        readAckSent: message.readAckSent,
+      })),
+      lastActivityAt: conv.lastActivityAt,
+      unreadCount: conv.unreadCount ?? 0,
+    };
+  }
+
+  /** Debounce-schedule a history write for a conversation (no-op while locked). */
+  private markDirty(peerUserId: string): void {
+    if (this.historySelfUserId === null) return;
+    this.dirtyPeers.add(peerUserId);
+    if (this.flushTimer !== null) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      void this.flushHistory();
+    }, ChatController.SAVE_DEBOUNCE_MS);
+  }
+
+  private async flushHistory(): Promise<void> {
+    const self = this.historySelfUserId;
+    if (self === null) return;
+    const peers = Array.from(this.dirtyPeers);
+    this.dirtyPeers.clear();
+    for (const peer of peers) {
+      const conv = this.conversations.get(peer);
+      if (conv === undefined) continue;
+      try {
+        await this.persistence.save(self, this.serializeConversation(conv));
+      } catch {
+        // Keep the peer dirty so the next flush retries.
+        this.dirtyPeers.add(peer);
+      }
+    }
+  }
+
+  /**
+   * Serialize ALL in-memory conversations and fire their saves before the
+   * conversations are wiped (logout / identity lock / dispose). Each `save`
+   * call captures the store key synchronously, so the store's subsequent
+   * `lock()` does not invalidate the in-flight writes.
+   */
+  private flushBeforeWipe(): void {
+    const self = this.historySelfUserId;
+    if (self === null) return;
+    if (this.conversations.size === 0) return;
+    const serialized = Array.from(this.conversations.values()).map((conv) =>
+      this.serializeConversation(conv),
+    );
+    for (const conversation of serialized) {
+      void this.persistence.save(self, conversation).catch(() => undefined);
+    }
   }
 
   private toSnapshot(conv: Conversation): ConversationSnapshot {

@@ -1150,6 +1150,7 @@ ul, ol {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  position: relative;
 }
 .chat-messages--empty {
   align-items: center;
@@ -1177,6 +1178,7 @@ ul, ol {
   font-size: var(--fs-sm);
   line-height: var(--lh-normal);
   word-break: break-word;
+  position: relative;
 }
 .chat-bubble--in {
   align-self: flex-start;
@@ -1197,12 +1199,43 @@ ul, ol {
   font-weight: 600;
   opacity: 0.7;
 }
+.chat-bubble__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.chat-bubble__menu {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out);
+}
+.chat-bubble:hover .chat-bubble__menu,
+.chat-bubble:focus-within .chat-bubble__menu,
+.chat-bubble__menu[aria-expanded="true"] {
+  opacity: 1;
+}
+.chat-bubble__menu:hover {
+  background: var(--color-bg-muted);
+}
 .chat-bubble__text {
   white-space: pre-wrap;
 }
 .chat-bubble__meta {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--space-2);
   font-size: var(--fs-xs);
   opacity: 0.6;
@@ -1211,26 +1244,172 @@ ul, ol {
   color: var(--color-danger);
   opacity: 1;
 }
-/* Delete-locally action: revealed on hover on pointers, always tappable on
+/* Delete-for-me menu: revealed on hover on pointers, always tappable on
    touch devices. It is a local-only, peer-invisible action. */
-.chat-bubble__actions {
-  display: flex;
-  justify-content: flex-end;
-  opacity: 0;
-  transition: opacity var(--duration-fast) var(--ease-out);
-  margin-top: calc(var(--space-1) * -1);
+.chat-menu-scrim {
+  position: fixed;
+  inset: 0;
+  border: none;
+  background: transparent;
+  cursor: default;
+  z-index: 5;
 }
-.chat-bubble:hover .chat-bubble__actions,
-.chat-bubble:focus-within .chat-bubble__actions {
-  opacity: 1;
+.chat-bubble__menu-pop {
+  position: absolute;
+  z-index: 6;
+  bottom: calc(100% + 0.25rem);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 9rem;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-surface-border);
+  box-shadow: var(--shadow-md);
+}
+.chat-bubble--in .chat-bubble__menu-pop {
+  left: 0;
+}
+.chat-bubble--out .chat-bubble__menu-pop {
+  right: 0;
 }
 .chat-bubble__delete {
-  font-size: var(--fs-xs);
-  color: var(--color-text-muted);
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-size: var(--fs-sm);
+  color: var(--color-danger);
+  text-align: left;
+  cursor: pointer;
   text-decoration: none;
 }
 .chat-bubble__delete:hover {
+  background: var(--color-danger-bg);
+}
+
+/* Typing indicator (peer is composing). */
+.chat-bubble--typing {
+  align-self: flex-start;
+  width: fit-content;
+}
+.chat-typing-dots {
+  display: inline-flex;
+  gap: 0.25rem;
+  align-items: center;
+}
+.chat-typing-dots i {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: var(--radius-full);
+  background: var(--color-text-secondary);
+  animation: chat-typing-bounce 1.2s var(--ease-out) infinite;
+}
+.chat-typing-dots i:nth-child(2) { animation-delay: 0.15s; }
+.chat-typing-dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes chat-typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-0.25rem); opacity: 1; }
+}
+
+/* Date separator in the message stream. */
+.chat-date {
+  align-self: center;
+  padding: var(--space-1) var(--space-4);
+  margin: var(--space-1) 0;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-muted);
+  color: var(--color-text-secondary);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Floating "N new messages" chip while scrolled into history. */
+.chat-jump-to-latest {
+  position: absolute;
+  bottom: var(--space-4);
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-surface-border);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  z-index: 4;
+}
+.chat-jump-to-latest:hover {
+  background: var(--color-bg-subtle);
+}
+
+/* Conversation list preview rows. */
+.chat-conversation__top,
+.chat-conversation__bottom {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: var(--space-2);
+  width: 100%;
+}
+.chat-conversation__bottom {
+  justify-content: space-between;
+}
+.chat-conversation__preview-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  flex: 1;
+}
+.chat-conversation__preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+}
+.chat-conversation--active .chat-conversation__preview {
+  color: var(--color-text-primary);
+}
+
+/* Delete-conversation confirmation strip. */
+.chat-delete-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-8);
+  border-bottom: 1px solid var(--color-danger-border);
+  background: var(--color-danger-bg);
   color: var(--color-danger);
+  font-size: var(--fs-sm);
+}
+.chat-delete-notice__actions {
+  display: inline-flex;
+  gap: var(--space-2);
+}
+.chat-header-delete:hover:not(:disabled) {
+  color: var(--color-danger);
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-bg);
 }
 
 .chat-composer {
@@ -2113,8 +2292,11 @@ ul, ol {
     padding: var(--space-3) var(--space-4);
     gap: var(--space-2);
   }
-  .chat-bubble__actions {
+  .chat-bubble__menu {
     opacity: 1;
+  }
+  .chat-delete-notice {
+    padding: var(--space-3) var(--space-4);
   }
   /* Touch-friendly targets on mobile: bump form controls to 44px. */
   .form__input,

@@ -16,6 +16,7 @@ const EMPTY_SNAPSHOT: ChatSnapshot = {
   connected: false,
   selfUserId: null,
   conversations: [],
+  historyLoaded: false,
 };
 
 export function useChat(): ChatSnapshot {

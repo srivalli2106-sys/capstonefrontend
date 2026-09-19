@@ -27,6 +27,12 @@ const dayFormatter = new Intl.DateTimeFormat(undefined, {
   day: 'numeric',
 });
 
+const separatorFormatter = new Intl.DateTimeFormat(undefined, {
+  weekday: 'short',
+  month: 'short',
+  day: 'numeric',
+});
+
 const fullFormatter = new Intl.DateTimeFormat(undefined, {
   weekday: 'short',
   year: 'numeric',
@@ -64,4 +70,15 @@ export function formatConversationTimestamp(ts: number): string {
   if (startOfDay(ts) === startOfDay(now)) return timeFormatter.format(ts);
   if (startOfDay(ts) === startOfDay(now) - DAY_MS) return 'Yesterday';
   return dayFormatter.format(ts);
+}
+
+/** Full day-separator label for the message stream: `Today` / `Yesterday` / `Mon, Sep 19`. */
+export function formatDaySeparator(ts: number): string {
+  if (!isValidTimestamp(ts)) return '';
+  const now = Date.now();
+  const today = startOfDay(now);
+  const day = startOfDay(ts);
+  if (day === today) return 'Today';
+  if (day === today - DAY_MS) return 'Yesterday';
+  return separatorFormatter.format(ts);
 }
