@@ -1,5 +1,5 @@
 /**
- * Key-bundle API adapters (Phase 4).
+ * Key-bundle API adapters (Phase 4 / Phase 14 hybrid).
  *
  * Thin wrappers over the backend `/keys/*` endpoints, mirroring `api/auth.ts`.
  * They perform no key-generation, no secret handling, and no state mutation.
@@ -7,7 +7,9 @@
  * Endpoints (verified against `server/routes/keys.py`):
  *
  *   POST /keys/upload           200 → { status: "ok", user_id }
- *       Body: { spk_public, spk_sig, opk_public|null }   (auth: Bearer JWT)
+ *       Body: { spk_public, spk_sig, opk_public|null,
+ *               pq_kem_public?, pq_sig_public?, pq_binding_sig?,
+ *               protocol_version? }                    (auth: Bearer JWT)
  *       400 → invalid hex / wrong length · 401 → missing token · 404 → user
  *
  *   GET /keys/bundle/{user_id}  200 → KeyBundleResponse   (auth: Bearer JWT)
@@ -17,7 +19,8 @@
  *   GET /keys/prekeys/{user_id} 200 → { user_id, opk_available, version }
  *                               401/404 as above
  *
- * Private key material is NEVER included in any request body or URL.
+ * Private key material (classical OR PQ) is NEVER included in any request
+ * body or URL.
  */
 
 import { http, type HttpRequestOptions } from './http';

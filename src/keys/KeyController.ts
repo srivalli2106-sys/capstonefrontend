@@ -40,6 +40,14 @@ export interface LocalKeyInfo {
   spkSignatureHex: string;
   /** X25519 one-time prekey (64-hex), or null when none held. */
   opkPublicHex: string | null;
+  /** ML-KEM-768 public key (2368-hex), or null when classical-only. */
+  pqKemPublicHex: string | null;
+  /** ML-DSA-44 public key (2624-hex), or null when classical-only. */
+  pqSigPublicHex: string | null;
+  /** ML-DSA-44 binding signature over the hybrid context (4840-hex). */
+  pqBindingSigHex: string | null;
+  /** 1 = classical, 2 = hybrid. */
+  protocolVersion: number;
 }
 
 export type KeyStatus =
@@ -53,12 +61,12 @@ class KeyControllerImpl {
   /** Guards against overlapping uploads for the same unlocked identity. */
   private uploading = false;
 
-  getStatus(): KeyStatus {
+  async getStatus(): Promise<KeyStatus> {
     const identity = authController.getUnlockedIdentity();
     if (identity === null || identity.deviceKeys === null) {
       return { kind: 'not_provisioned' };
     }
-    const local = buildLocalKeyInfo(identity);
+    const local = await buildLocalKeyInfo(identity);
     if (local === null) {
       return { kind: 'not_provisioned' };
     }
@@ -79,7 +87,7 @@ class KeyControllerImpl {
    * they never block auth or chat.
    */
   async ensureBundleUploaded(): Promise<void> {
-    const status = this.getStatus();
+    const status = await this.getStatus();
     if (status.kind !== 'ready' || this.uploading) {
       return;
     }
@@ -96,6 +104,10 @@ class KeyControllerImpl {
           spk_public: local.spkPublicHex,
           spk_sig: local.spkSignatureHex,
           opk_public: local.opkPublicHex,
+          pq_kem_public: local.pqKemPublicHex,
+          pq_sig_public: local.pqSigPublicHex,
+          pq_binding_sig: local.pqBindingSigHex,
+          protocol_version: local.protocolVersion,
         },
         { authToken: token },
       );
@@ -122,25 +134,26 @@ class KeyControllerImpl {
   }
 
   private notify(): void {
-    const status = this.getStatus();
-    this.listeners.forEach((l) => {
-      try {
-        l(status);
-      } catch {
-        // listener errors must not break the loop
-      }
+    this.getStatus().then((status) => {
+      this.listeners.forEach((l) => {
+        try {
+          l(status);
+        } catch {
+          // listener errors must not break the loop
+        }
+      });
     });
   }
 }
 
-export function buildLocalKeyInfo(
+export async function buildLocalKeyInfo(
   identity: UnlockedIdentity,
-): LocalKeyInfo | null {
+): Promise<LocalKeyInfo | null> {
   if (identity.deviceKeys === null) {
     return null;
   }
   const seed = identity.exportRawSeed();
-  const bundle = buildDevicePublicBundle(seed, identity.deviceKeys);
+  const bundle = await buildDevicePublicBundle(seed, identity.deviceKeys);
   const hex = devicePublicBundleToHex(bundle);
   return {
     userId: identity.userId,
@@ -153,6 +166,14 @@ export function buildLocalKeyInfo(
       Array.isArray(hex.opk_publics) && hex.opk_publics.length > 0
         ? String(hex.opk_publics[0])
         : null,
+    pqKemPublicHex:
+      typeof hex.pq_kem_public === 'string' ? hex.pq_kem_public : null,
+    pqSigPublicHex:
+      typeof hex.pq_sig_public === 'string' ? hex.pq_sig_public : null,
+    pqBindingSigHex:
+      typeof hex.pq_binding_sig === 'string' ? hex.pq_binding_sig : null,
+    protocolVersion:
+      typeof hex.protocol_version === 'number' ? hex.protocol_version : 1,
   };
 }
 

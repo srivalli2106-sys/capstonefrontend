@@ -84,11 +84,11 @@ function bobDevice(): DeviceKeysPrivate {
   return { ikxPrivate: IKX_B_PRIV, spkPrivate: SPK_B_PRIV, opkPrivate: OPK_B_PRIV };
 }
 
-function remoteBundle(): RemotePublicBundle {
+async function remoteBundle(): Promise<RemotePublicBundle> {
   // Build a valid bundle using the same fixed materials so the SPK sig
   // verifies cleanly. We use AUTH_SEED_B + bobDevice() so the signature
   // matches the pinned value.
-  const built = buildDevicePublicBundle(AUTH_SEED_B, bobDevice());
+  const built = await buildDevicePublicBundle(AUTH_SEED_B, bobDevice());
   return {
     authIkPublic: built.ikPublic,
     ikxPublic: hexToBytes(IKX_B_PUB),
@@ -98,9 +98,9 @@ function remoteBundle(): RemotePublicBundle {
   };
 }
 
-function remoteBundleNoOpk(): RemotePublicBundle {
+async function remoteBundleNoOpk(): Promise<RemotePublicBundle> {
   const device = { ikxPrivate: IKX_B_PRIV, spkPrivate: SPK_B_PRIV, opkPrivate: null };
-  const built = buildDevicePublicBundle(AUTH_SEED_B, device);
+  const built = await buildDevicePublicBundle(AUTH_SEED_B, device);
   return {
     authIkPublic: built.ikPublic,
     ikxPublic: hexToBytes(IKX_B_PUB),
@@ -162,7 +162,7 @@ describe('buildInitPayload / parseInitPayload', () => {
 
 describe('x3dhInitiate (with OPK)', () => {
   it('matches the Python reference byte-for-byte (SK, AD, payload, DH parts)', async () => {
-    const result = await x3dhInitiate(IKX_A_PRIV, remoteBundle(), {
+    const result = await x3dhInitiate(IKX_A_PRIV, await remoteBundle(), {
       ephemeralPrivateKey: EK_A_PRIV,
     });
     expect(result.sharedSecret.length).toBe(32);
@@ -175,7 +175,7 @@ describe('x3dhInitiate (with OPK)', () => {
   });
 
   it('rejects a tampered SPK signature', async () => {
-    const bundle = remoteBundle();
+    const bundle = await remoteBundle();
     const sig = new Uint8Array(bundle.spkSignature);
     sig[0] = (sig[0] ?? 0) ^ 0xff;
     const tampered = { ...bundle, spkSignature: sig };
@@ -184,7 +184,7 @@ describe('x3dhInitiate (with OPK)', () => {
   });
 
   it('rejects a bundle with a wrong identity key (sig of another auth)', async () => {
-    const bundle = remoteBundle();
+    const bundle = await remoteBundle();
     const wrongBundle: RemotePublicBundle = {
       ...bundle,
       authIkPublic: buildDevicePublicBundle(AUTH_SEED_A, aliceBundle().device).ikPublic,
@@ -194,20 +194,20 @@ describe('x3dhInitiate (with OPK)', () => {
   });
 
   it('rejects a missing IKX_B (current REST contract gap)', async () => {
-    const bundle: RemotePublicBundle = { ...remoteBundle(), ikxPublic: null };
+    const bundle: RemotePublicBundle = { ...(await remoteBundle()), ikxPublic: null };
     await expect(x3dhInitiate(IKX_A_PRIV, bundle, { ephemeralPrivateKey: EK_A_PRIV }))
       .rejects.toMatchObject({ code: 'missing_ikx' });
   });
 
   it('rejects an ephemeral of wrong length', async () => {
-    await expect(x3dhInitiate(IKX_A_PRIV, remoteBundle(), { ephemeralPrivateKey: new Uint8Array(16) }))
+    await expect(x3dhInitiate(IKX_A_PRIV, await remoteBundle(), { ephemeralPrivateKey: new Uint8Array(16) }))
       .rejects.toMatchObject({ code: 'invalid_ephemeral' });
   });
 });
 
 describe('x3dhInitiate (no OPK)', () => {
   it('matches the pinned 3-term SK, AD, payload, and DH parts', async () => {
-    const result = await x3dhInitiate(IKX_A_PRIV, remoteBundleNoOpk(), {
+    const result = await x3dhInitiate(IKX_A_PRIV, await remoteBundleNoOpk(), {
       ephemeralPrivateKey: EK_A2_PRIV,
     });
     expect(result.opkIndex).toBeNull();
@@ -219,10 +219,10 @@ describe('x3dhInitiate (no OPK)', () => {
   });
 
   it('differs from the with-OPK shared secret (sanity)', async () => {
-    const withOpk = await x3dhInitiate(IKX_A_PRIV, remoteBundle(), {
+    const withOpk = await x3dhInitiate(IKX_A_PRIV, await remoteBundle(), {
       ephemeralPrivateKey: EK_A_PRIV,
     });
-    const noOpk = await x3dhInitiate(IKX_A_PRIV, remoteBundleNoOpk(), {
+    const noOpk = await x3dhInitiate(IKX_A_PRIV, await remoteBundleNoOpk(), { 
       ephemeralPrivateKey: EK_A2_PRIV,
     });
     expect(bytesToHex(withOpk.sharedSecret)).not.toBe(bytesToHex(noOpk.sharedSecret));
@@ -231,7 +231,7 @@ describe('x3dhInitiate (no OPK)', () => {
 
 describe('x3dhRespond', () => {
   it('reproduces the same SK, AD, and opk index as the initiator', async () => {
-    const init = await x3dhInitiate(IKX_A_PRIV, remoteBundle(), {
+    const init = await x3dhInitiate(IKX_A_PRIV, await remoteBundle(), {
       ephemeralPrivateKey: EK_A_PRIV,
     });
     const response = await x3dhRespond(
@@ -248,7 +248,7 @@ describe('x3dhRespond', () => {
   });
 
   it('reproduces the same SK on the no-OPK path', async () => {
-    const init = await x3dhInitiate(IKX_A_PRIV, remoteBundleNoOpk(), {
+    const init = await x3dhInitiate(IKX_A_PRIV, await remoteBundleNoOpk(), {
       ephemeralPrivateKey: EK_A2_PRIV,
     });
     const response = await x3dhRespond(
@@ -264,7 +264,7 @@ describe('x3dhRespond', () => {
   });
 
   it('rejects an OPK index the responder does not hold', async () => {
-    const init = await x3dhInitiate(IKX_A_PRIV, remoteBundle(), {
+    const init = await x3dhInitiate(IKX_A_PRIV, await remoteBundle(), {
       ephemeralPrivateKey: EK_A_PRIV,
     });
     await expect(
@@ -275,7 +275,7 @@ describe('x3dhRespond', () => {
 
 describe('X3DHSession', () => {
   it('initiator session exposes initPayload + ephemeral', async () => {
-    const init = await X3DHSession.initiate(aliceBundle().device, remoteBundle(), {
+    const init = await X3DHSession.initiate(aliceBundle().device, await remoteBundle(), {
       ephemeralPrivateKey: EK_A_PRIV,
       peerUserId: 'bob',
     });
@@ -290,7 +290,7 @@ describe('X3DHSession', () => {
   });
 
   it('accept session reproduces the same SK and has no initPayload', async () => {
-    const init = await X3DHSession.initiate(aliceBundle().device, remoteBundle(), {
+    const init = await X3DHSession.initiate(aliceBundle().device, await remoteBundle(), {
       ephemeralPrivateKey: EK_A_PRIV,
     });
     const accept = await X3DHSession.accept(bobDevice(), init.initPayload!, {

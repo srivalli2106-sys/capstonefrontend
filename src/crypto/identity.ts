@@ -311,8 +311,14 @@ export async function unlockIdentity(
 function wipeDeviceKeys(device: DeviceKeysPrivate): void {
   device.ikxPrivate.fill(0);
   device.spkPrivate.fill(0);
-  if (device.opkPrivate !== null) {
+  if (device.opkPrivate !== null && device.opkPrivate !== undefined) {
     device.opkPrivate.fill(0);
+  }
+  if (device.pqKemPrivate !== null && device.pqKemPrivate !== undefined) {
+    device.pqKemPrivate.fill(0);
+  }
+  if (device.pqSigPrivate !== null && device.pqSigPrivate !== undefined) {
+    device.pqSigPrivate.fill(0);
   }
 }
 

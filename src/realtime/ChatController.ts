@@ -73,6 +73,12 @@ import { getKeyBundle } from '../api/keys';
 import { getPresence } from '../api/presence';
 import { parseRemoteKeyBundle, KeyBundleError, type RemoteKeyBundle } from '../crypto/keyBundle';
 import {
+  mlKem768Encapsulate,
+  mlKem768Decapsulate,
+  mlKem768DerivePublicKey,
+  mlDsa44DerivePublicKey,
+} from '../crypto/pq';
+import {
   E2EESession,
   SessionError,
 } from '../crypto/e2eeSession';
@@ -655,11 +661,67 @@ export class ChatController {
     return result.data;
   }
 
+  /**
+   * Fetch the initiator's bundle so we can verify their identity keys and
+   * ML-DSA pub key during hybrid session accept. (Same call as
+   * `fetchBundle`; kept separate for clarity at the call site.)
+   */
+  private async fetchInitiatorBundle(
+    peerUserId: string,
+  ): Promise<Awaited<ReturnType<typeof getKeyBundle>>['data']> {
+    const token = this.authController.getToken();
+    if (token === null) {
+      throw encodeChatError('no_jwt', 'Authentication required.');
+    }
+    return this.fetchBundle(peerUserId, token);
+  }
+
   private async buildInitiatorSession(
     deviceKeys: DeviceKeysPrivate,
     remote: RemoteKeyBundle,
   ): Promise<E2EESession> {
     try {
+      if (remote.protocolVersion === 2) {
+        // Hybrid v2 path. The peer bundle carries the Ed25519 SPK sig AND
+        // the ML-DSA binding sig (both verified by parseRemoteKeyBundle).
+        if (
+          deviceKeys.pqKemPrivate === null ||
+          deviceKeys.pqKemPrivate === undefined ||
+          deviceKeys.pqSigPrivate === null ||
+          deviceKeys.pqSigPrivate === undefined
+        ) {
+          throw encodeChatError(
+            'no_identity',
+            'Hybrid v2 requested by peer but this device has no ML-KEM/ML-DSA keys. Re-create the local identity with hybrid mode enabled.',
+          );
+        }
+        const alicePqKem = mlKem768DerivePublicKey(deviceKeys.pqKemPrivate);
+        const alicePqSig = mlDsa44DerivePublicKey(deviceKeys.pqSigPrivate);
+        const identity = this.authController.getUnlockedIdentity();
+        if (identity === null) {
+          throw encodeChatError('no_identity', 'Identity locked.');
+        }
+        return await E2EESession.initiateHybrid(
+          deviceKeys.ikxPrivate,
+          hexToBytes(identity.publicKeyHex),
+          deviceKeys.pqKemPrivate,
+          alicePqKem,
+          alicePqSig,
+          {
+            authIkPublic: hexToBytes(remote.ikPublicHex),
+            ikxPublic: hexToBytes(remote.ikxPublicHex),
+            spkPublic: hexToBytes(remote.spkPublicHex),
+            spkSignature: hexToBytes(remote.spkSignatureHex),
+            opkPublic: remote.opkPublicHex === null ? null : hexToBytes(remote.opkPublicHex),
+            pqKemPublic: remote.pqKemPublicHex === null ? null : hexToBytes(remote.pqKemPublicHex),
+            pqSigPublic: remote.pqSigPublicHex === null ? null : hexToBytes(remote.pqSigPublicHex),
+            pqBindingSig: remote.pqBindingSigHex === null ? null : hexToBytes(remote.pqBindingSigHex),
+            protocolVersion: remote.protocolVersion,
+          },
+          mlKem768Encapsulate,
+        );
+      }
+      // Classical v1 path.
       return await E2EESession.initiate(
         deviceKeys.ikxPrivate,
         {
@@ -747,13 +809,51 @@ export class ChatController {
     conv.lastActivityAt = Date.now();
     let session: E2EESession;
     try {
-      session = await E2EESession.accept(
-        identity.deviceKeys.spkPrivate,
-        identity.deviceKeys.ikxPrivate,
-        x25519PublicFromPrivate(identity.deviceKeys.ikxPrivate),
-        identity.deviceKeys.opkPrivate === null ? [] : [identity.deviceKeys.opkPrivate],
-        initPayload,
-      );
+      const initVersion = initPayload.length > 0 ? initPayload[0] : 0;
+      if (initVersion === 2) {
+        // Hybrid v2. We need the initiator's identity material from the
+        // initiator's bundle (fetched separately) and Alice's ML-DSA pub
+        // (carried in the v2 INIT payload alongside the KEM ciphertext).
+        if (
+          identity.deviceKeys.pqKemPrivate === null ||
+          identity.deviceKeys.pqKemPrivate === undefined ||
+          identity.deviceKeys.pqSigPrivate === null ||
+          identity.deviceKeys.pqSigPrivate === undefined
+        ) {
+          this.recordSessionError(
+            env.sender,
+            encodeChatError(
+              'no_identity',
+              'Received v2 hybrid session_init but this device has no ML-KEM/ML-DSA keys.',
+            ),
+          );
+          return;
+        }
+        const aliceBundle = await this.fetchInitiatorBundle(env.sender);
+        const bobPqKem = mlKem768DerivePublicKey(identity.deviceKeys.pqKemPrivate);
+        const bobPqSig = mlDsa44DerivePublicKey(identity.deviceKeys.pqSigPrivate);
+        session = await E2EESession.acceptHybrid(
+          identity.deviceKeys.spkPrivate,
+          identity.deviceKeys.ikxPrivate,
+          identity.deviceKeys.pqKemPrivate,
+          identity.deviceKeys.opkPrivate === null ? [] : [identity.deviceKeys.opkPrivate],
+          bobPqKem,
+          bobPqSig,
+          hexToBytes(aliceBundle.ik_public),
+          hexToBytes(aliceBundle.pq_kem_public ?? ''),
+          hexToBytes(aliceBundle.pq_sig_public ?? ''),
+          initPayload,
+          mlKem768Decapsulate,
+        );
+      } else {
+        session = await E2EESession.accept(
+          identity.deviceKeys.spkPrivate,
+          identity.deviceKeys.ikxPrivate,
+          x25519PublicFromPrivate(identity.deviceKeys.ikxPrivate),
+          identity.deviceKeys.opkPrivate === null ? [] : [identity.deviceKeys.opkPrivate],
+          initPayload,
+        );
+      }
     } catch (err) {
       this.recordSessionError(
         env.sender,

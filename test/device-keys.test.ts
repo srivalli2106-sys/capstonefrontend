@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import {
   DEVICE_KEYS_AD_CONTEXT,
   buildDevicePublicBundle,
@@ -77,7 +77,11 @@ describe('device key generation', () => {
 });
 
 describe('bundle construction matches backend reference vectors', () => {
-  const bundle = buildDevicePublicBundle(AUTH_SEED_B, fixedDevice());
+  let bundle: Awaited<ReturnType<typeof buildDevicePublicBundle>>;
+
+  beforeAll(async () => {
+    bundle = await buildDevicePublicBundle(AUTH_SEED_B, fixedDevice());
+  });
 
   it('matches the pinned X25519 publics', () => {
     expect(bytesToHex(bundle.xdhPublic)).toBe(expected.ikxBPublic);
@@ -111,7 +115,11 @@ describe('bundle construction matches backend reference vectors', () => {
 
 describe('SPK signature verification', () => {
   const device = fixedDevice();
-  const bundle = buildDevicePublicBundle(AUTH_SEED_B, device);
+  let bundle: Awaited<ReturnType<typeof buildDevicePublicBundle>>;
+
+  beforeAll(async () => {
+    bundle = await buildDevicePublicBundle(AUTH_SEED_B, device);
+  });
 
   it('accepts the genuine signature', () => {
     expect(verifySignedPrekey(bundle.ikPublic, bundle.spkPublic, bundle.spkSignature)).toBe(
@@ -233,8 +241,8 @@ describe('device keys AD context', () => {
     );
   });
 
-  it('never embeds private scalars', () => {
-    const bundle = buildDevicePublicBundle(AUTH_SEED_B, fixedDevice());
+  it('never embeds private scalars', async () => {
+    const bundle = await buildDevicePublicBundle(AUTH_SEED_B, fixedDevice());
     const hex = devicePublicBundleToHex(bundle);
     const joined = JSON.stringify(hex);
     expect(joined).not.toContain(bytesToHex(SPK_B_PRIV));

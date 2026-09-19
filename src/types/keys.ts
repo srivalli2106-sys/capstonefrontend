@@ -30,6 +30,14 @@ export interface UploadKeyBundleRequest {
   spk_sig: string;
   /** 64-hex X25519 one-time-prekey public, or null. */
   opk_public: string | null;
+  /** 2368-hex ML-KEM-768 public key (1184 bytes); null for classical v1. */
+  pq_kem_public?: string | null;
+  /** 2624-hex ML-DSA-44 public key (1312 bytes); null for classical v1. */
+  pq_sig_public?: string | null;
+  /** 4840-hex ML-DSA-44 binding signature (2420 bytes); null for v1. */
+  pq_binding_sig?: string | null;
+  /** Protocol version: 1 = classical, 2 = hybrid. Defaults to 1. */
+  protocol_version?: number;
 }
 
 export interface UploadKeyBundleResponse {
@@ -53,6 +61,15 @@ export interface KeyBundleResponse {
    * server-side. null when consumed or never uploaded.
    */
   opk_public: string | null;
+  /** 2368-hex ML-KEM-768 public key; null for v1 classical. */
+  pq_kem_public: string | null;
+  /** 2624-hex ML-DSA-44 public key; null for v1 classical. */
+  pq_sig_public: string | null;
+  /** 4840-hex ML-DSA-44 binding signature over the hybrid context. */
+  pq_binding_sig: string | null;
+  /** 1 = classical only, 2 = hybrid (classical + PQ). */
+  protocol_version: number;
+  /** Per-upload counter (bumped on every upload). Used for cache busting. */
   version: number;
 }
 

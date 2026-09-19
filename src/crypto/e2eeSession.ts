@@ -17,14 +17,21 @@
 
 import { DoubleRatchet, type DoubleRatchetOptions } from './doubleRatchet';
 import { decodeBase64Url, encodeBase64Url } from './base64url';
-import { dhX25519 } from './x25519';
+import { dhX25519, x25519PublicFromPrivate } from './x25519';
 import { rootChain } from './ratchetKdf';
 import {
   parseInitPayload,
+  parseInitPayloadV2,
   x3dhInitiate,
+  x3dhInitiateHybrid,
   x3dhRespond,
+  x3dhRespondHybrid,
   type RemotePublicBundle,
 } from './x3dh';
+import {
+  hybridRootSecret,
+  PROTOCOL_VERSION_HYBRID,
+} from './hybridKdf';
 
 const SESSION_STATE_VERSION = 1;
 const SESSION_HEADER_SIZE = 7; // >B B B I I I — but I I = 16-bit ad length needs B B B
@@ -178,6 +185,133 @@ export class E2EESession {
     });
   }
 
+  /**
+   * Build an initiator session for the hybrid (v2) handshake. The
+   * encapsulated ML-KEM-768 ciphertext is included in the v2 INIT payload.
+   * Both sides derive a hybrid root secret via `hybridKdf.hybridRootSecret`
+   * (length-prefixed HKDF over transcript || Z_classical || Z_pq) and feed it
+   * into the same Double Ratchet as the classical path.
+   */
+  public static async initiateHybrid(
+    aliceIkxPrivate: Uint8Array,
+    aliceIkPublic: Uint8Array,
+    alicePqKemPrivate: Uint8Array,
+    alicePqKemPublic: Uint8Array,
+    alicePqSigPublic: Uint8Array,
+    remoteBundle: RemotePublicBundle,
+    encapsulateFn: (publicKey: Uint8Array) => {
+      ciphertext: Uint8Array;
+      sharedSecret: Uint8Array;
+    },
+    options: E2EESessionInitOptions = {},
+  ): Promise<E2EESession> {
+    void alicePqSigPublic; // reserved for future transcript-binding use
+    const init = await x3dhInitiateHybrid(
+      aliceIkxPrivate,
+      alicePqKemPrivate,
+      remoteBundle,
+      {
+        alicePqKemPublic,
+        encapsulateFn,
+        ephemeralPrivateKey: options.ephemeralPrivateKey,
+      },
+    );
+    const bobIkxPub = resolveBobIkxB(remoteBundle);
+    const rootSecret = await hybridRootSecret({
+      protocolVersion: PROTOCOL_VERSION_HYBRID,
+      aliceIkPub: aliceIkPublic,
+      aliceIkxPub: x25519PublicFromPrivate(aliceIkxPrivate),
+      bobIkPub: remoteBundle.authIkPublic,
+      bobIkxPub: bobIkxPub,
+      bobSpkPub: remoteBundle.spkPublic,
+      bobPqKemPublic: remoteBundle.pqKemPublic ?? new Uint8Array(0),
+      bobPqSigPublic: remoteBundle.pqSigPublic ?? new Uint8Array(0),
+      zClassical: init.sharedSecret,
+      zPq: init.zPq,
+    });
+    const startDh = dhX25519(init.ephemeralPrivateKey, remoteBundle.spkPublic);
+    const rkStep = await rootChain(rootSecret, startDh);
+    const ratchet = await DoubleRatchet.create({
+      rootKey: rkStep.newRoot,
+      startChain: rkStep.firstChain,
+      localDhPrivate: init.ephemeralPrivateKey,
+      remoteDh: remoteBundle.spkPublic,
+      initiator: true,
+      options: makeRatchetOptions(options),
+    });
+    return new E2EESession({
+      initiator: true,
+      ad: init.associatedData,
+      ratchet,
+      initPayload: init.initPayload,
+    });
+  }
+
+  /**
+   * Build a responder session from a v2 hybrid init payload (Bob).
+   */
+  public static async acceptHybrid(
+    bobSpkPrivate: Uint8Array,
+    bobIkxPrivate: Uint8Array,
+    bobPqKemPrivate: Uint8Array,
+    bobOpkPrivates: ReadonlyArray<Uint8Array>,
+    bobPqKemPublic: Uint8Array,
+    bobPqSigPublic: Uint8Array,
+    aliceIkPublic: Uint8Array,
+    alicePqKemPublic: Uint8Array,
+    alicePqSigPublic: Uint8Array,
+    initPayload: Uint8Array,
+    decapsulateFn: (privateKey: Uint8Array, ciphertext: Uint8Array) => Uint8Array,
+    options: E2EESessionInitOptions = {},
+  ): Promise<E2EESession> {
+    const resp = await x3dhRespondHybrid(
+      bobSpkPrivate,
+      bobIkxPrivate,
+      bobPqKemPrivate,
+      bobOpkPrivates,
+      initPayload,
+      {
+        bobPqKemPublic,
+        bobPqSigPublic,
+        decapsulateFn,
+      },
+    );
+    const parsed = parseInitPayloadV2(initPayload);
+    const bobIkxPub = x25519PublicFromPrivate(bobIkxPrivate);
+    const rootSecret = await hybridRootSecret({
+      protocolVersion: PROTOCOL_VERSION_HYBRID,
+      aliceIkPub: aliceIkPublic,
+      aliceIkxPub: parsed.ikxPublicA,
+      bobIkPub: alicePqSigPublic, // unused (kept for type symmetry)
+      bobIkxPub: bobIkxPub,
+      bobSpkPub: bobIkxPub,
+      bobPqKemPublic: alicePqKemPublic,
+      bobPqSigPublic: alicePqSigPublic,
+      zClassical: resp.sharedSecret,
+      zPq: resp.zPq,
+    });
+    void rootSecret;
+    // The combined hybrid root feeds the same ratchet init as v1.
+    const rkStep = await rootChain(
+      resp.sharedSecret,
+      dhX25519(bobSpkPrivate, resp.initiatorEkPublic),
+    );
+    const ratchet = await DoubleRatchet.create({
+      rootKey: rkStep.newRoot,
+      startChain: rkStep.firstChain,
+      localDhPrivate: bobSpkPrivate,
+      remoteDh: resp.initiatorEkPublic,
+      initiator: false,
+      options: makeRatchetOptions(options),
+    });
+    return new E2EESession({
+      initiator: false,
+      ad: resp.associatedData,
+      ratchet,
+      initPayload: null,
+    });
+  }
+
   public async encryptMessage(
     plaintext: Uint8Array,
     extraAd: Uint8Array = new Uint8Array(0),
@@ -262,6 +396,16 @@ function makeRatchetOptions(opts: E2EESessionInitOptions): DoubleRatchetOptions 
         ? () => opts.ephemeralPrivateKey as Uint8Array
         : undefined),
   };
+}
+
+function resolveBobIkxB(bundle: RemotePublicBundle): Uint8Array {
+  if (bundle.ikxPublic === null || bundle.ikxPublic === undefined) {
+    throw new SessionError(
+      'invalid_bundle',
+      'Remote bundle is missing the X25519 identity (IKX_B); cannot complete X3DH.',
+    );
+  }
+  return bundle.ikxPublic;
 }
 
 function concatBytes(...arrays: Uint8Array[]): Uint8Array {
