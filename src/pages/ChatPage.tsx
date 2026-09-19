@@ -10,6 +10,7 @@
 
 import type { FormEvent, JSX } from 'react';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { authController } from '../auth/AuthController';
 import { getWebSocketController } from '../realtime/setup';
 import { useAuth } from '../hooks/useAuth';
@@ -60,6 +61,7 @@ function conversationPreview(conversation: ConversationSnapshot): string {
 export function ChatPage(): JSX.Element {
   const { authenticated, userId, identity } = useAuth();
   const chat = useChat();
+  const location = useLocation();
 
   const [targetInput, setTargetInput] = useState('');
   const [activePeer, setActivePeer] = useState<string | null>(null);
@@ -68,6 +70,11 @@ export function ChatPage(): JSX.Element {
   const [opening, setOpening] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  const [showUnlockPrompt, setShowUnlockPrompt] = useState(false);
+  const [unlockPassphrase, setUnlockPassphrase] = useState('');
+  const [unlockError, setUnlockError] = useState<string | null>(null);
+  const [unlocking, setUnlocking] = useState(false);
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Resolve the active ChatController once setup has run.
@@ -96,6 +103,35 @@ export function ChatPage(): JSX.Element {
       setActivePeer(first.peerUserId);
     }
   }, [chat.conversations, activePeer]);
+
+  // Handle browser back button on mobile: if we're in a conversation and
+  // the user goes back, return to conversation list instead of leaving the page.
+  useEffect(() => {
+    const handlePopState = () => {
+      if (activePeer !== null) {
+        setActivePeer(null);
+        // Prevent the default back navigation since we're handling it
+        window.history.pushState(null, '', location.pathname);
+      }
+    };
+    // Push a state so we can intercept the back button
+    window.history.pushState(null, '', location.pathname);
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [activePeer, location.pathname]);
+
+  // Show unlock prompt when identity is locked and user is authenticated
+  useEffect(() => {
+    if (authenticated && identity.kind === 'locked') {
+      setShowUnlockPrompt(true);
+    } else {
+      setShowUnlockPrompt(false);
+      setUnlockPassphrase('');
+      setUnlockError(null);
+    }
+  }, [authenticated, identity.kind]);
 
   // ---- Typing indicator (outgoing signal management) -------------------
   const typingStartPeerRef = useRef<string | null>(null);
@@ -229,12 +265,33 @@ export function ChatPage(): JSX.Element {
   const handleOpenConversation = useCallback(
     (peer: string) => {
       setActivePeer(peer);
+      setMobileDrawerOpen(false);
       if (ctrl === null) return;
       void ctrl.openConversation(peer).catch((err) => {
         setSendError(safeErrorMessage(err, 'Could not open conversation.'));
       });
     },
     [ctrl],
+  );
+
+  const handleUnlock = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (userId === null) return;
+      setUnlockError(null);
+      setUnlocking(true);
+      try {
+        await authController.unlock(userId, unlockPassphrase);
+        setUnlockPassphrase('');
+        setShowUnlockPrompt(false);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unlock failed.';
+        setUnlockError(message);
+      } finally {
+        setUnlocking(false);
+      }
+    },
+    [userId, unlockPassphrase],
   );
 
   const handleSend = useCallback(
@@ -323,321 +380,408 @@ export function ChatPage(): JSX.Element {
   // Identify / lock state.
   const identityLocked = identity.kind !== 'unlocked';
 
+  // Mobile: determine if we should show the sidebar drawer
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+
   return (
     <div className="page page--full page--chat">
       {!authenticated ? (
         <p className="page__lede">Sign in to start a conversation.</p>
       ) : (
-        <div
-          className="chat-layout"
-          data-testid="chat-layout"
-          data-active-peer={activePeer === null ? 'false' : 'true'}
-        >
-          <aside className="chat-sidebar" aria-label="Conversations">
-            <div className="chat-sidebar__heading">
-              <span>Conversations</span>
-              <span className="muted" style={{ fontWeight: 400, textTransform: 'none' }}>
-                {chat.conversations.length}
-              </span>
+        <>
+          {/* Unlock prompt modal */}
+          {showUnlockPrompt && (
+            <div className="unlock-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="unlock-title">
+              <div className="unlock-modal">
+                <header className="unlock-modal__header">
+                  <h2 id="unlock-title">Unlock Identity</h2>
+                  <p className="unlock-modal__subtitle">
+                    Enter your passphrase to unlock your local encrypted identity and device keys.
+                  </p>
+                </header>
+                <form onSubmit={handleUnlock} className="unlock-modal__form">
+                  <div className="form__field">
+                    <label htmlFor="unlock-passphrase" className="form__label">
+                      Passphrase
+                    </label>
+                    <input
+                      id="unlock-passphrase"
+                      type="password"
+                      autoComplete="current-password"
+                      className="form__input"
+                      value={unlockPassphrase}
+                      onChange={(e) => setUnlockPassphrase(e.target.value)}
+                      placeholder="Enter passphrase"
+                      disabled={unlocking}
+                      required
+                    />
+                  </div>
+                  {unlockError && (
+                    <div className="form__error" role="alert">
+                      <span>{unlockError}</span>
+                    </div>
+                  )}
+                  <div className="form__actions">
+                    <button
+                      type="submit"
+                      className="button button--primary"
+                      disabled={unlocking || unlockPassphrase.length === 0}
+                    >
+                      {unlocking ? 'Unlocking…' : 'Unlock'}
+                    </button>
+                  </div>
+                </form>
+              </div>
             </div>
+          )}
 
-            <input
-              className="form__input form__input--search"
-              name="conversation_search"
-              type="search"
-              placeholder="Search conversations"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              disabled={chat.conversations.length === 0}
-              aria-label="Search conversations by user id"
-              data-testid="conversation-search"
-            />
+          <div
+            className="chat-layout"
+            data-testid="chat-layout"
+            data-active-peer={activePeer === null ? 'false' : 'true'}
+            data-mobile-drawer-open={mobileDrawerOpen ? 'true' : 'false'}
+          >
+            {/* Mobile hamburger button (only visible on mobile when in a conversation) */}
+            {isMobile && activePeer !== null && (
+              <button
+                type="button"
+                className="chat-mobile-hamburger"
+                onClick={() => setMobileDrawerOpen(true)}
+                aria-label="Open conversations"
+                aria-expanded={mobileDrawerOpen}
+                data-testid="mobile-hamburger"
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="3" y1="6" x2="21" y2="6" />
+                  <line x1="3" y1="12" x2="21" y2="12" />
+                  <line x1="3" y1="18" x2="21" y2="18" />
+                </svg>
+              </button>
+            )}
 
-            <form className="form form--inline" onSubmit={handleOpen}>
-              <div className="form__row" style={{ width: '100%' }}>
-                <input
-                  className="form__input"
-                  name="new_peer"
-                  type="text"
-                  placeholder="Recipient user_id"
-                  minLength={3}
-                  maxLength={64}
-                  autoComplete="off"
-                  value={targetInput}
-                  onChange={(e) => setTargetInput(e.target.value)}
-                  disabled={identityLocked || ctrl === null}
-                  aria-label="Recipient user identifier"
+            {/* Mobile drawer overlay */}
+            {isMobile && mobileDrawerOpen && (
+              <div
+                className="chat-mobile-drawer-overlay"
+                onClick={() => setMobileDrawerOpen(false)}
+                aria-hidden="true"
+              />
+            )}
+
+            {/* Conversation sidebar */}
+            <aside
+              className={`chat-sidebar ${isMobile && mobileDrawerOpen ? 'chat-sidebar--open' : ''}`}
+              aria-label="Conversations"
+            >
+              <div className="chat-sidebar__heading">
+                <span>Conversations</span>
+                <span className="muted" style={{ fontWeight: 400, textTransform: 'none' }}>
+                  {chat.conversations.length}
+                </span>
+              </div>
+
+              <input
+                className="form__input form__input--search"
+                name="conversation_search"
+                type="search"
+                placeholder="Search conversations"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                disabled={chat.conversations.length === 0}
+                aria-label="Search conversations by user id"
+                data-testid="conversation-search"
+              />
+
+              <form className="form form--inline" onSubmit={handleOpen}>
+                <div className="form__row" style={{ width: '100%' }}>
+                  <input
+                    className="form__input"
+                    name="new_peer"
+                    type="text"
+                    placeholder="Recipient user_id"
+                    minLength={3}
+                    maxLength={64}
+                    autoComplete="off"
+                    value={targetInput}
+                    onChange={(e) => setTargetInput(e.target.value)}
+                    disabled={identityLocked || ctrl === null}
+                    aria-label="Recipient user identifier"
+                  />
+                  <button
+                    type="submit"
+                    className="button button--primary button--small"
+                    disabled={targetInput.trim().length < 3 || identityLocked || ctrl === null || opening}
+                    data-testid="open-conversation"
+                  >
+                    {opening ? 'Opening…' : 'Open'}
+                  </button>
+                </div>
+              </form>
+
+              {identityLocked && (
+                <p className="form__hint form__hint--warn" role="status">
+                  Identity locked — unlock to start a session.
+                </p>
+              )}
+
+              {sendError !== null && (
+                <div className="form__error" role="alert" data-testid="open-error">
+                  <span>{sendError}</span>
+                </div>
+              )}
+
+              {!chat.historyLoaded ? (
+                <p
+                  className="page__lede"
+                  style={{ fontSize: 'var(--fs-sm)' }}
+                  data-testid="chat-loading"
+                >
+                  Restoring conversations…
+                </p>
+              ) : filteredConversations.length === 0 ? (
+                <p className="page__lede" style={{ fontSize: 'var(--fs-sm)' }}>
+                  {chat.conversations.length === 0
+                    ? 'No conversations yet. Start one above.'
+                    : 'No conversations match your search.'}
+                </p>
+              ) : (
+                <ul className="chat-conversation-list" role="listbox" aria-label="Active conversations">
+                  {filteredConversations.map((c) => (
+                    <li key={c.peerUserId}>
+                      <button
+                        type="button"
+                        className={
+                          'chat-conversation' +
+                          (c.peerUserId === activePeer ? ' chat-conversation--active' : '')
+                        }
+                        onClick={() => handleOpenConversation(c.peerUserId)}
+                        data-peer={c.peerUserId}
+                        aria-pressed={c.peerUserId === activePeer}
+                      >
+                        <span className="chat-conversation__top">
+                          <span className="chat-conversation__peer">{c.peerUserId}</span>
+                          <span className="chat-conversation__meta">
+                            <span
+                              className="chat-conversation__time"
+                              data-testid="conversation-time"
+                            >
+                              {formatConversationTimestamp(c.lastActivityAt)}
+                            </span>
+                          </span>
+                        </span>
+                        <span className="chat-conversation__bottom">
+                          <span className="chat-conversation__preview-line">
+                            <PresenceDot state={c.presence} />
+                            <span
+                              className="chat-conversation__preview"
+                              data-testid="conversation-preview"
+                            >
+                              {conversationPreview(c)}
+                            </span>
+                          </span>
+                          {c.unreadCount > 0 && (
+                            <span
+                              className="chat-conversation__unread"
+                              data-testid="unread-badge"
+                            >
+                              {c.unreadCount}
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </aside>
+
+            {/* Main chat area */}
+            <section className="chat-main" aria-label="Active conversation">
+              <header className="chat-main__header">
+                {/* Mobile back button - visible on mobile when in a conversation */}
+                {isMobile && activePeer !== null && (
+                  <button
+                    type="button"
+                    className="chat-main__back"
+                    onClick={() => setActivePeer(null)}
+                    aria-label="Back to conversations"
+                    data-testid="conversation-back"
+                  >
+                    ‹ Back
+                  </button>
+                )}
+                <div className="chat-main__title">
+                  {activePeer === null ? (
+                    <span className="chat-main__subtitle">Select a conversation</span>
+                  ) : (
+                    <>
+                      <span className="chat-main__peer">{activePeer}</span>
+                      <span className="chat-main__subtitle" data-testid="conversation-subtitle">
+                        {formatHeaderSubtitle(activePeer, activeConversation)}
+                      </span>
+                    </>
+                  )}
+                </div>
+                <div className="chat-main__meta">
+                  <span
+                    className="chat-meta-pill"
+                    data-state={wsState}
+                    data-testid="connection-state"
+                    title={`Transport state: ${wsState}`}
+                  >
+                    {wsState === 'open'
+                      ? 'Connected'
+                      : wsState === 'connecting' || wsState === 'authenticating'
+                        ? 'Connecting…'
+                        : wsState === 'closed'
+                          ? 'Disconnected'
+                          : wsState === 'closing'
+                            ? 'Closing…'
+                            : 'Idle'}
+                  </span>
+                  {activeConversation !== null && (
+                    <span
+                      className={
+                        'chat-meta-pill ' +
+                        (activeConversation.session.kind === 'ready'
+                          ? 'pill--success'
+                          : activeConversation.session.kind === 'error'
+                            ? 'pill--danger'
+                            : '')
+                      }
+                      data-testid="encryption-state"
+                    >
+                      {activeConversation.session.kind === 'ready'
+                        ? 'Encrypted'
+                        : activeConversation.session.kind === 'error'
+                          ? 'Session error'
+                          : activeConversation.session.kind === 'initiating'
+                            ? 'Establishing…'
+                            : 'No session'}
+                    </span>
+                  )}
+                  {activePeer !== null && (
+                    <button
+                      type="button"
+                      className="button button--ghost button--small chat-header-delete"
+                      onClick={() => requestDeleteConversation(activePeer)}
+                      data-testid="delete-conversation"
+                      aria-expanded={deleteConfirm === activePeer}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
+              </header>
+
+              {deleteConfirm !== null && deleteConfirm === activePeer && (
+                <div
+                  className="chat-delete-notice"
+                  role="alertdialog"
+                  aria-label="Delete conversation?"
+                  data-testid="delete-notice"
+                >
+                  <span>
+                    Delete this conversation from this device? Messages are removed
+                    locally only — the peer is not notified.
+                  </span>
+                  <span className="chat-delete-notice__actions">
+                    <button
+                      type="button"
+                      className="button button--ghost button--small"
+                      onClick={cancelDeleteConversation}
+                      data-testid="delete-cancel"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="button button--danger button--small"
+                      onClick={() => void confirmDeleteConversation(deleteConfirm)}
+                      data-testid="delete-confirm"
+                    >
+                      Delete
+                    </button>
+                  </span>
+                </div>
+              )}
+
+              <MessageList
+                conversation={activeConversation}
+                selfUserId={userId}
+                historyLoaded={chat.historyLoaded}
+                onRetry={handleRetry}
+                onDelete={handleDeleteLocally}
+              />
+
+              {activeConversation?.session.kind === 'error' && (
+                <div className="form__error" role="alert" data-testid="session-error">
+                  <span>{activeConversation.session.error.message}</span>
+                  {activeConversation.session.error.requestId !== null && (
+                    <small className="form__meta">
+                      {' '}
+                      (request_id: <code>{activeConversation.session.error.requestId}</code>)
+                    </small>
+                  )}
+                </div>
+              )}
+
+              <form className="chat-composer" onSubmit={handleSend} data-testid="composer-form">
+                <textarea
+                  className="chat-composer__input"
+                  name="message"
+                  placeholder={
+                    identityLocked
+                      ? 'Unlock your identity to send messages'
+                      : activePeer === null
+                        ? 'Select a conversation first'
+                        : activeConversation === null ||
+                            activeConversation.session.kind !== 'ready'
+                          ? 'Secure session not established'
+                          : 'Type a message — Enter to send, Shift+Enter for newline'
+                  }
+                  value={composer}
+                  onChange={(e) => handleComposerChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      void handleSend(e as unknown as FormEvent<HTMLFormElement>);
+                    }
+                  }}
+                  disabled={
+                    identityLocked ||
+                    activePeer === null ||
+                    activeConversation === null ||
+                    activeConversation.session.kind !== 'ready'
+                  }
+                  data-testid="composer-input"
+                  rows={1}
+                  aria-label="Message text"
                 />
                 <button
                   type="submit"
-                  className="button button--primary button--small"
-                  disabled={targetInput.trim().length < 3 || identityLocked || ctrl === null || opening}
-                  data-testid="open-conversation"
-                >
-                  {opening ? 'Opening…' : 'Open'}
-                </button>
-              </div>
-            </form>
-
-            {identityLocked && (
-              <p className="form__hint form__hint--warn" role="status">
-                Identity locked — unlock in Settings to start a session.
-              </p>
-            )}
-
-            {sendError !== null && (
-              <div className="form__error" role="alert" data-testid="open-error">
-                <span>{sendError}</span>
-              </div>
-            )}
-
-            {!chat.historyLoaded ? (
-              <p
-                className="page__lede"
-                style={{ fontSize: 'var(--fs-sm)' }}
-                data-testid="chat-loading"
-              >
-                Restoring conversations…
-              </p>
-            ) : filteredConversations.length === 0 ? (
-              <p className="page__lede" style={{ fontSize: 'var(--fs-sm)' }}>
-                {chat.conversations.length === 0
-                  ? 'No conversations yet. Start one above.'
-                  : 'No conversations match your search.'}
-              </p>
-            ) : (
-              <ul className="chat-conversation-list" role="listbox" aria-label="Active conversations">
-                {filteredConversations.map((c) => (
-                  <li key={c.peerUserId}>
-                    <button
-                      type="button"
-                      className={
-                        'chat-conversation' +
-                        (c.peerUserId === activePeer ? ' chat-conversation--active' : '')
-                      }
-                      onClick={() => handleOpenConversation(c.peerUserId)}
-                      data-peer={c.peerUserId}
-                      aria-pressed={c.peerUserId === activePeer}
-                    >
-                      <span className="chat-conversation__top">
-                        <span className="chat-conversation__peer">{c.peerUserId}</span>
-                        <span className="chat-conversation__meta">
-                          <span
-                            className="chat-conversation__time"
-                            data-testid="conversation-time"
-                          >
-                            {formatConversationTimestamp(c.lastActivityAt)}
-                          </span>
-                        </span>
-                      </span>
-                      <span className="chat-conversation__bottom">
-                        <span className="chat-conversation__preview-line">
-                          <PresenceDot state={c.presence} />
-                          <span
-                            className="chat-conversation__preview"
-                            data-testid="conversation-preview"
-                          >
-                            {conversationPreview(c)}
-                          </span>
-                        </span>
-                        {c.unreadCount > 0 && (
-                          <span
-                            className="chat-conversation__unread"
-                            data-testid="unread-badge"
-                          >
-                            {c.unreadCount}
-                          </span>
-                        )}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </aside>
-
-          <section className="chat-main" aria-label="Active conversation">
-            <header className="chat-main__header">
-              <button
-                type="button"
-                className="chat-main__back"
-                onClick={() => setActivePeer(null)}
-                aria-label="Back to conversations"
-                data-testid="conversation-back"
-              >
-                ‹ Back
-              </button>
-              <div className="chat-main__title">
-                {activePeer === null ? (
-                  <span className="chat-main__subtitle">Select a conversation</span>
-                ) : (
-                  <>
-                    <span className="chat-main__peer">{activePeer}</span>
-                    <span className="chat-main__subtitle" data-testid="conversation-subtitle">
-                      {formatHeaderSubtitle(activePeer, activeConversation)}
-                    </span>
-                  </>
-                )}
-              </div>
-              <div className="chat-main__meta">
-                <span
-                  className="chat-meta-pill"
-                  data-state={wsState}
-                  data-testid="connection-state"
-                  title={`Transport state: ${wsState}`}
-                >
-                  {wsState === 'open'
-                    ? 'Connected'
-                    : wsState === 'connecting' || wsState === 'authenticating'
-                      ? 'Connecting…'
-                      : wsState === 'closed'
-                        ? 'Disconnected'
-                        : wsState === 'closing'
-                          ? 'Closing…'
-                          : 'Idle'}
-                </span>
-                {activeConversation !== null && (
-                  <span
-                    className={
-                      'chat-meta-pill ' +
-                      (activeConversation.session.kind === 'ready'
-                        ? 'pill--success'
-                        : activeConversation.session.kind === 'error'
-                          ? 'pill--danger'
-                          : '')
-                    }
-                    data-testid="encryption-state"
-                  >
-                    {activeConversation.session.kind === 'ready'
-                      ? 'Encrypted'
-                      : activeConversation.session.kind === 'error'
-                        ? 'Session error'
-                        : activeConversation.session.kind === 'initiating'
-                          ? 'Establishing…'
-                          : 'No session'}
-                  </span>
-                )}
-                {activePeer !== null && (
-                  <button
-                    type="button"
-                    className="button button--ghost button--small chat-header-delete"
-                    onClick={() => requestDeleteConversation(activePeer)}
-                    data-testid="delete-conversation"
-                    aria-expanded={deleteConfirm === activePeer}
-                  >
-                    Delete
-                  </button>
-                )}
-              </div>
-            </header>
-
-            {deleteConfirm !== null && deleteConfirm === activePeer && (
-              <div
-                className="chat-delete-notice"
-                role="alertdialog"
-                aria-label="Delete conversation?"
-                data-testid="delete-notice"
-              >
-                <span>
-                  Delete this conversation from this device? Messages are removed
-                  locally only — the peer is not notified.
-                </span>
-                <span className="chat-delete-notice__actions">
-                  <button
-                    type="button"
-                    className="button button--ghost button--small"
-                    onClick={cancelDeleteConversation}
-                    data-testid="delete-cancel"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="button button--danger button--small"
-                    onClick={() => void confirmDeleteConversation(deleteConfirm)}
-                    data-testid="delete-confirm"
-                  >
-                    Delete
-                  </button>
-                </span>
-              </div>
-            )}
-
-            <MessageList
-              conversation={activeConversation}
-              selfUserId={userId}
-              historyLoaded={chat.historyLoaded}
-              onRetry={handleRetry}
-              onDelete={handleDeleteLocally}
-            />
-
-            {activeConversation?.session.kind === 'error' && (
-              <div className="form__error" role="alert" data-testid="session-error">
-                <span>{activeConversation.session.error.message}</span>
-                {activeConversation.session.error.requestId !== null && (
-                  <small className="form__meta">
-                    {' '}
-                    (request_id: <code>{activeConversation.session.error.requestId}</code>)
-                  </small>
-                )}
-              </div>
-            )}
-
-            <form className="chat-composer" onSubmit={handleSend} data-testid="composer-form">
-              <textarea
-                className="chat-composer__input"
-                name="message"
-                placeholder={
-                  identityLocked
-                    ? 'Unlock your identity to send messages'
-                    : activePeer === null
-                      ? 'Select a conversation first'
-                      : activeConversation === null ||
-                          activeConversation.session.kind !== 'ready'
-                        ? 'Secure session not established'
-                        : 'Type a message — Enter to send, Shift+Enter for newline'
-                }
-                value={composer}
-                onChange={(e) => handleComposerChange(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    void handleSend(e as unknown as FormEvent<HTMLFormElement>);
+                  className="button button--primary"
+                  disabled={
+                    composer.trim().length === 0 ||
+                    identityLocked ||
+                    activePeer === null ||
+                    activeConversation === null ||
+                    activeConversation.session.kind !== 'ready'
                   }
-                }}
-                disabled={
-                  identityLocked ||
-                  activePeer === null ||
-                  activeConversation === null ||
-                  activeConversation.session.kind !== 'ready'
-                }
-                data-testid="composer-input"
-                rows={1}
-                aria-label="Message text"
-              />
-              <button
-                type="submit"
-                className="button button--primary"
-                disabled={
-                  composer.trim().length === 0 ||
-                  identityLocked ||
-                  activePeer === null ||
-                  activeConversation === null ||
-                  activeConversation.session.kind !== 'ready'
-                }
-                data-testid="composer-send"
-              >
-                Send
-              </button>
-            </form>
+                  data-testid="composer-send"
+                >
+                  Send
+                </button>
+              </form>
 
-            {sendError !== null && (
-              <div className="form__error" role="alert" data-testid="send-error">
-                <span>{sendError}</span>
-              </div>
-            )}
-          </section>
-        </div>
+              {sendError !== null && (
+                <div className="form__error" role="alert" data-testid="send-error">
+                  <span>{sendError}</span>
+                </div>
+              )}
+            </section>
+          </div>
+        </>
       )}
     </div>
   );
