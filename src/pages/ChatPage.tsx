@@ -79,6 +79,8 @@ export function ChatPage(): JSX.Element {
     return typeof window !== 'undefined' && window.innerWidth < 768;
   });
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activePeerRef = useRef<string | null>(activePeer);
+  const mobileDrawerOpenRef = useRef<boolean>(mobileDrawerOpen);
 
   // Resolve the active ChatController once setup has run.
   const ctrl: ChatController | null = useMemo(() => {
@@ -107,29 +109,38 @@ export function ChatPage(): JSX.Element {
     }
   }, [chat.conversations, activePeer]);
 
-  // Handle browser back button on mobile: if we're in a conversation and
-  // the user goes back, return to conversation list instead of leaving the page.
+  // Keep refs in sync with the latest state so the popstate handler (which
+  // reads them inside a single browser-event tick) never sees stale values.
   useEffect(() => {
-    // Only intercept back when we're in a conversation on mobile.
-    // On desktop, normal browser navigation works fine.
+    activePeerRef.current = activePeer;
+  }, [activePeer]);
+  useEffect(() => {
+    mobileDrawerOpenRef.current = mobileDrawerOpen;
+  }, [mobileDrawerOpen]);
+
+  // Handle browser back button on mobile. Priority:
+  //   1) Drawer open  → close the drawer, stay on /chat.
+  //   2) Peer active  → clear the peer (return to list), stay on /chat.
+  //   3) Otherwise    → let the browser handle it (navigate away).
+  useEffect(() => {
     const handlePopState = (): void => {
-      // If a conversation is active on mobile, just clear it and re-push
-      // a synthetic state so we stay on /chat.
-      // Use a functional update to read the latest activePeer without
-      // re-binding this effect on every change.
-      setActivePeer((current) => {
-        if (current !== null) {
-          window.history.pushState(null, '', location.pathname);
-          return null;
-        }
-        return current;
-      });
+      if (mobileDrawerOpenRef.current) {
+        mobileDrawerOpenRef.current = false;
+        setMobileDrawerOpen(false);
+        window.history.pushState(null, '', location.pathname);
+        return;
+      }
+      if (activePeerRef.current !== null) {
+        activePeerRef.current = null;
+        setActivePeer(null);
+        window.history.pushState(null, '', location.pathname);
+      }
     };
     window.addEventListener('popstate', handlePopState);
     return () => {
       window.removeEventListener('popstate', handlePopState);
     };
-  }, [location.pathname]);
+  }, []);
 
   // Show unlock prompt when identity is locked and user is authenticated
   useEffect(() => {
@@ -461,35 +472,19 @@ export function ChatPage(): JSX.Element {
             data-active-peer={activePeer === null ? 'false' : 'true'}
             data-mobile-drawer-open={mobileDrawerOpen ? 'true' : 'false'}
           >
-            {/* Mobile hamburger button (only visible on mobile when in a conversation) */}
-            {isMobile && activePeer !== null && (
-              <button
-                type="button"
-                className="chat-mobile-hamburger"
-                onClick={() => setMobileDrawerOpen(true)}
-                aria-label="Open conversations"
-                aria-expanded={mobileDrawerOpen}
-                data-testid="mobile-hamburger"
-              >
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="3" y1="6" x2="21" y2="6" />
-                  <line x1="3" y1="12" x2="21" y2="12" />
-                  <line x1="3" y1="18" x2="21" y2="18" />
-                </svg>
-              </button>
-            )}
-
             {/* Mobile drawer overlay */}
             {isMobile && mobileDrawerOpen && (
               <div
                 className="chat-mobile-drawer-overlay"
                 onClick={() => setMobileDrawerOpen(false)}
                 aria-hidden="true"
+                data-testid="mobile-drawer-overlay"
               />
             )}
 
             {/* Conversation sidebar */}
             <aside
+              id="chat-conversations"
               className={`chat-sidebar ${isMobile && mobileDrawerOpen ? 'chat-sidebar--open' : ''}`}
               aria-label="Conversations"
             >
@@ -618,17 +613,46 @@ export function ChatPage(): JSX.Element {
             {/* Main chat area */}
             <section className="chat-main" aria-label="Active conversation">
               <header className="chat-main__header">
-                {/* Mobile back button - visible on mobile when in a conversation */}
+                {/* Mobile-only header controls: hamburger + Back. Both live in
+                    the header so they get their own hit targets and never
+                    overlap. */}
                 {isMobile && activePeer !== null && (
-                  <button
-                    type="button"
-                    className="chat-main__back"
-                    onClick={() => setActivePeer(null)}
-                    aria-label="Back to conversations"
-                    data-testid="conversation-back"
-                  >
-                    ‹ Back
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="chat-main__hamburger"
+                      onClick={() => setMobileDrawerOpen(true)}
+                      aria-label="Open conversations"
+                      aria-expanded={mobileDrawerOpen}
+                      aria-controls="chat-conversations"
+                      data-testid="mobile-hamburger"
+                    >
+                      <svg
+                        width="22"
+                        height="22"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <line x1="3" y1="6" x2="21" y2="6" />
+                        <line x1="3" y1="12" x2="21" y2="12" />
+                        <line x1="3" y1="18" x2="21" y2="18" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      className="chat-main__back"
+                      onClick={() => setActivePeer(null)}
+                      aria-label="Back to conversations"
+                      data-testid="conversation-back"
+                    >
+                      ‹ Back
+                    </button>
+                  </>
                 )}
                 <div className="chat-main__title">
                   {activePeer === null ? (

@@ -890,6 +890,39 @@ ul, ol {
   font-size: var(--fs-xs);
 }
 
+/* Identity status row in Settings: status pill + inline Unlock button. */
+.settings-identity-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+/* Inline unlock form inside the Identity card. */
+.settings-unlock-form {
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-surface-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.settings-unlock-form__title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  margin: 0;
+  color: var(--color-text-primary);
+}
+.settings-unlock-form__hint {
+  font-size: var(--fs-sm);
+  color: var(--color-text-secondary);
+  line-height: var(--lh-loose);
+  margin: 0;
+}
+.settings-unlock-form .form__actions {
+  flex-wrap: wrap;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Health status                                                              */
 /* -------------------------------------------------------------------------- */
@@ -1472,26 +1505,30 @@ ul, ol {
 /* Chat — Mobile Navigation & Drawer                                         */
 /* -------------------------------------------------------------------------- */
 
-.chat-mobile-hamburger {
+/* Hamburger lives inside the chat-main header on mobile so it does not
+   overlap the Back button. Hidden by default on desktop. */
+.chat-main__hamburger {
   display: none;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   width: 2.5rem;
   height: 2.5rem;
-  border: none;
+  padding: 0;
+  border: 1px solid var(--color-surface-border);
   border-radius: var(--radius-md);
   background: var(--color-bg-elevated);
   color: var(--color-text-secondary);
   cursor: pointer;
-  padding: 0;
-  z-index: 60;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
   transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
 }
-.chat-mobile-hamburger:hover {
+.chat-main__hamburger:hover {
   background: var(--color-bg-muted);
   color: var(--color-text-primary);
 }
-.chat-mobile-hamburger:focus-visible {
+.chat-main__hamburger:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
@@ -1518,14 +1555,8 @@ ul, ol {
     grid-template-columns: none;
   }
 
-  .chat-mobile-hamburger {
-    display: flex;
-    position: fixed;
-    top: calc(var(--navbar-height) + 0.5rem);
-    left: 0.5rem;
-    z-index: 60;
-    box-shadow: var(--shadow-sm);
-    border: 1px solid var(--color-surface-border);
+  .chat-main__hamburger {
+    display: inline-flex;
   }
 
   .chat-sidebar {
@@ -1549,6 +1580,15 @@ ul, ol {
     box-shadow: var(--shadow-lg);
   }
 
+  /* Drawer-open override: when the user taps the hamburger, the sidebar must
+     remain visible even though the active peer is set (which would otherwise
+     hide it via the swap pattern below). The `.chat-sidebar--open` class
+     makes this selector more specific than the `display:none` rule in the
+     later `(max-width: 768px)` block. */
+  .chat-layout[data-mobile-drawer-open="true"] .chat-sidebar.chat-sidebar--open {
+    display: flex;
+  }
+
   .chat-mobile-drawer-overlay {
     display: block;
   }
@@ -1559,13 +1599,16 @@ ul, ol {
   }
 
   .chat-main__back {
-    display: flex;
+    display: inline-flex;
+    flex-shrink: 0;
   }
 
   .chat-main__header {
     position: sticky;
     top: 0;
     z-index: 10;
+    gap: var(--space-2);
+    flex-wrap: nowrap;
   }
 
   .chat-messages {

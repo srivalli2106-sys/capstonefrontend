@@ -3,14 +3,14 @@
  *
  * Surfaces existing-only state in user-facing terms:
  *  - JWT session info (user_id, expiry).
- *  - Local identity status (locked/unlocked).
- *  - Lock / unlock / wipe / sign-out actions.
+ *  - Local identity status (locked/unlocked) + inline unlock UI.
+ *  - Lock / wipe / sign-out actions.
  *
  * No raw or truncated cryptographic key material is displayed.
  */
 
 import type { FormEvent, JSX } from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError } from '../api/http';
 import { authController } from '../auth/AuthController';
@@ -20,7 +20,6 @@ type Action =
   | { kind: 'idle' }
   | { kind: 'logout' }
   | { kind: 'lock' }
-  | { kind: 'unlock'; passphrase: string }
   | { kind: 'wipe' };
 
 export function SettingsPage(): JSX.Element {
@@ -28,7 +27,21 @@ export function SettingsPage(): JSX.Element {
   const navigate = useNavigate();
   const [action, setAction] = useState<Action>({ kind: 'idle' });
   const [error, setError] = useState<{ message: string; requestId: string | null } | null>(null);
+  const [showUnlockForm, setShowUnlockForm] = useState(false);
   const [unlockPassphrase, setUnlockPassphrase] = useState('');
+  const [unlocking, setUnlocking] = useState(false);
+
+  // Collapse the unlock form whenever the identity becomes unlocked (e.g.
+  // after a successful submission) so the UI cleanly returns to its
+  // post-unlock state without a manual refresh.
+  useEffect(() => {
+    if (identity.kind === 'unlocked') {
+      setShowUnlockForm(false);
+      setUnlockPassphrase('');
+      setUnlocking(false);
+      setError(null);
+    }
+  }, [identity.kind]);
 
   async function performLogout(): Promise<void> {
     setAction({ kind: 'logout' });
@@ -58,17 +71,23 @@ export function SettingsPage(): JSX.Element {
   async function performUnlock(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (userId === null) return;
-    setAction({ kind: 'unlock', passphrase: unlockPassphrase });
     setError(null);
+    setUnlocking(true);
     try {
       await authController.unlock(userId, unlockPassphrase);
-      setUnlockPassphrase('');
-      setAction({ kind: 'idle' });
+      // useEffect on identity.kind will collapse the form + clear state.
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unlock failed.';
       setError({ message, requestId: null });
-      setAction({ kind: 'idle' });
+    } finally {
+      setUnlocking(false);
     }
+  }
+
+  function cancelUnlock(): void {
+    setShowUnlockForm(false);
+    setUnlockPassphrase('');
+    setError(null);
   }
 
   async function performWipe(): Promise<void> {
@@ -145,12 +164,89 @@ export function SettingsPage(): JSX.Element {
           <div className="settings-list__row">
             <dt>Identity key</dt>
             <dd>
-              <span className={'pill ' + (identity.kind === 'unlocked' ? 'pill--success' : 'pill--warning')}>
-                {identity.kind === 'unlocked' ? 'Stored securely on this device' : 'Locked'}
-              </span>
+              <div className="settings-identity-status">
+                <span className={'pill ' + (identity.kind === 'unlocked' ? 'pill--success' : 'pill--warning')}>
+                  {identity.kind === 'unlocked' ? 'Unlocked' : 'Locked'}
+                </span>
+                {identity.kind === 'locked' && !showUnlockForm && (
+                  <button
+                    type="button"
+                    className="button button--small"
+                    onClick={() => {
+                      setError(null);
+                      setShowUnlockForm(true);
+                    }}
+                    disabled={userId === null}
+                    data-testid="unlock-identity-button"
+                    aria-label="Unlock identity"
+                  >
+                    Unlock Identity
+                  </button>
+                )}
+              </div>
             </dd>
           </div>
         </dl>
+
+        {identity.kind === 'locked' && showUnlockForm && (
+          <form
+            className="settings-unlock-form"
+            onSubmit={performUnlock}
+            data-testid="unlock-identity-form"
+            aria-labelledby="settings-identity-unlock"
+          >
+            <h3 id="settings-identity-unlock" className="settings-unlock-form__title">
+              Unlock your identity
+            </h3>
+            <p className="settings-unlock-form__hint">
+              Enter the passphrase you set when you registered. It is used to decrypt
+              the local device keys on this device only; it is never sent to the
+              server.
+            </p>
+            <div className="form__field">
+              <label htmlFor="settings-unlock-passphrase" className="form__label">
+                Passphrase
+              </label>
+              <input
+                id="settings-unlock-passphrase"
+                className="form__input"
+                type="password"
+                autoComplete="current-password"
+                required
+                value={unlockPassphrase}
+                onChange={(e) => setUnlockPassphrase(e.target.value)}
+                placeholder="Enter passphrase"
+                disabled={unlocking}
+                aria-label="Identity passphrase"
+                data-testid="unlock-identity-passphrase"
+              />
+            </div>
+            {error !== null && (
+              <div className="form__error" role="alert" data-testid="unlock-identity-error">
+                <span>{error.message}</span>
+              </div>
+            )}
+            <div className="form__actions">
+              <button
+                type="submit"
+                className="button button--primary"
+                disabled={unlocking || unlockPassphrase.length === 0}
+                data-testid="unlock-identity-submit"
+              >
+                {unlocking ? 'Unlocking…' : 'Unlock'}
+              </button>
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={cancelUnlock}
+                disabled={unlocking}
+                data-testid="unlock-identity-cancel"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
       </section>
 
       {error !== null && (
@@ -179,34 +275,10 @@ export function SettingsPage(): JSX.Element {
               className="button"
               onClick={performLock}
               disabled={action.kind !== 'idle'}
+              data-testid="lock-identity"
             >
               {action.kind === 'lock' ? 'Locking…' : 'Lock identity'}
             </button>
-          )}
-
-          {identity.kind === 'locked' && (
-            <form className="form form--inline" onSubmit={performUnlock}>
-              <div className="form__row">
-                <input
-                  className="form__input"
-                  type="password"
-                  autoComplete="current-password"
-                  required
-                  value={unlockPassphrase}
-                  onChange={(e) => setUnlockPassphrase(e.target.value)}
-                  placeholder="Passphrase"
-                  disabled={action.kind !== 'idle'}
-                  aria-label="Identity passphrase"
-                />
-                <button
-                  type="submit"
-                  className="button button--primary"
-                  disabled={action.kind !== 'idle' || unlockPassphrase.length === 0}
-                >
-                  {action.kind === 'unlock' ? 'Unlocking…' : 'Unlock'}
-                </button>
-              </div>
-            </form>
           )}
 
           <button
@@ -214,6 +286,7 @@ export function SettingsPage(): JSX.Element {
             className="button"
             onClick={performWipe}
             disabled={action.kind !== 'idle' || identity.kind === 'none'}
+            data-testid="wipe-identity"
           >
             {action.kind === 'wipe' ? 'Wiping…' : 'Wipe local identity'}
           </button>
@@ -223,6 +296,7 @@ export function SettingsPage(): JSX.Element {
             className="button button--danger"
             onClick={performLogout}
             disabled={!authenticated || action.kind !== 'idle'}
+            data-testid="sign-out"
           >
             {action.kind === 'logout' ? 'Signing out…' : 'Sign out'}
           </button>
