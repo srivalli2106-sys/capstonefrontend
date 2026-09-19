@@ -192,6 +192,95 @@ describe('device-key serialization', () => {
     expect(() => deserializeDeviceKeys(new Uint8Array(4))).toThrow();
     expect(() => deserializeDeviceKeys(new Uint8Array([99, 1, 2]))).toThrow();
   });
+
+  it('rejects an unknown payload version (e.g. 3)', () => {
+    const payload = new Uint8Array(66);
+    payload[0] = 3; // unknown version
+    expect(() => deserializeDeviceKeys(payload)).toThrow(/unsupported device-keys payload version 3/);
+  });
+
+  it('round-trips a v2 hybrid payload (with PQ keys)', async () => {
+    const { generateMlKem768Keypair, generateMlDsa44Keypair } = await import('../src/crypto/pq');
+    const kem = generateMlKem768Keypair();
+    const sig = generateMlDsa44Keypair();
+    const device: DeviceKeysPrivate = {
+      ikxPrivate: block32(1),
+      spkPrivate: block32(33),
+      opkPrivate: block32(97),
+      pqKemPrivate: kem.privateKey,
+      pqSigPrivate: sig.privateKey,
+    };
+    const restored = deserializeDeviceKeys(serializeDeviceKeys(device));
+    expect(restored.ikxPrivate).toEqual(device.ikxPrivate);
+    expect(restored.spkPrivate).toEqual(device.spkPrivate);
+    expect(restored.opkPrivate).toEqual(device.opkPrivate);
+    expect(restored.pqKemPrivate).not.toBeNull();
+    expect(restored.pqSigPrivate).not.toBeNull();
+    expect(restored.pqKemPrivate).toEqual(device.pqKemPrivate);
+    expect(restored.pqSigPrivate).toEqual(device.pqSigPrivate);
+  });
+});
+
+describe('device-key serialization: v1 backward compatibility', () => {
+  // Pre-hybrid device-key payloads used a v1 binary layout:
+  //   byte 0        payload version (1)
+  //   bytes 1..32   ikx private
+  //   bytes 33..64  spk private
+  //   byte 65       opk flag (0 = none, 1 = present)
+  //   bytes 66..97  opk private (only when flag == 1)
+  // There was no PQ section. deserializeDeviceKeys must accept v1 so
+  // existing pre-hybrid users can still unlock their identity.
+
+  it('accepts a v1 payload without an OPK and returns null PQ keys', () => {
+    const v1 = new Uint8Array(66); // 1 + 32 + 32 + 1
+    v1[0] = 1; // version
+    for (let i = 0; i < 32; i += 1) v1[1 + i] = (i + 1) & 0xff;
+    for (let i = 0; i < 32; i += 1) v1[33 + i] = (i + 100) & 0xff;
+    v1[65] = 0; // no OPK
+
+    const restored = deserializeDeviceKeys(v1);
+    expect(restored.opkPrivate).toBeNull();
+    expect(restored.pqKemPrivate).toBeNull();
+    expect(restored.pqSigPrivate).toBeNull();
+    expect(restored.ikxPrivate.length).toBe(32);
+    expect(restored.spkPrivate.length).toBe(32);
+    for (let i = 0; i < 32; i += 1) {
+      expect(restored.ikxPrivate[i]).toBe((i + 1) & 0xff);
+      expect(restored.spkPrivate[i]).toBe((i + 100) & 0xff);
+    }
+  });
+
+  it('accepts a v1 payload WITH an OPK and returns null PQ keys', () => {
+    const v1 = new Uint8Array(98); // 1 + 32 + 32 + 1 + 32
+    v1[0] = 1; // version
+    for (let i = 0; i < 32; i += 1) v1[1 + i] = (i + 1) & 0xff;
+    for (let i = 0; i < 32; i += 1) v1[33 + i] = (i + 50) & 0xff;
+    v1[65] = 1; // OPK present
+    for (let i = 0; i < 32; i += 1) v1[66 + i] = (i + 200) & 0xff;
+
+    const restored = deserializeDeviceKeys(v1);
+    expect(restored.opkPrivate).not.toBeNull();
+    expect(restored.opkPrivate?.length).toBe(32);
+    expect(restored.pqKemPrivate).toBeNull();
+    expect(restored.pqSigPrivate).toBeNull();
+    for (let i = 0; i < 32; i += 1) {
+      expect(restored.opkPrivate![i]).toBe((i + 200) & 0xff);
+    }
+  });
+
+  it('accepts a v1 payload even with a stray trailing byte (lenient read)', () => {
+    // A v1 payload is allowed to be exactly 66 (no OPK) or 98 (with OPK).
+    // We deliberately do NOT reject extra bytes on v1 — that would break
+    // any pre-hybrid record whose writer rounded up the buffer. The
+    // hardening lives in the v2 path, which strictly checks the PQ flag.
+    const v1 = new Uint8Array(99); // 98 + 1 stray byte
+    v1[0] = 1;
+    v1[65] = 1;
+    // The deserializer should still produce a usable result.
+    const restored = deserializeDeviceKeys(v1);
+    expect(restored.pqKemPrivate).toBeNull();
+    expect(restored.pqSigPrivate).toBeNull();
+  });
 });
 
 describe('encrypted device-key persistence', () => {
@@ -230,6 +319,48 @@ describe('encrypted device-key persistence', () => {
     const a = await encryptDeviceKeys(key, device, ad);
     const b = await encryptDeviceKeys(key, device, ad);
     expect(a.ivHex).not.toBe(b.ivHex);
+  });
+
+  /**
+   * Simulates the full unlock flow for a pre-hybrid user: a v1 device-keys
+   * payload was encrypted and stored before the hybrid upgrade. The new
+   * hybrid code must be able to decrypt + deserialize it so the user can
+   * sign in again without losing their identity.
+   */
+  it('decrypts a pre-hybrid v1 encrypted device-keys blob successfully', async () => {
+    const key = await deriveKey();
+    const ad = deviceKeysAssociatedData('alice');
+    // Build a v1 binary payload by hand (version 1, classical-only, with OPK).
+    const v1 = new Uint8Array(98);
+    v1[0] = 1;
+    for (let i = 0; i < 32; i += 1) v1[1 + i] = 0x10 + i;
+    for (let i = 0; i < 32; i += 1) v1[33 + i] = 0x30 + i;
+    v1[65] = 1; // OPK present
+    for (let i = 0; i < 32; i += 1) v1[66 + i] = 0x70 + i;
+    // Encrypt under the same AD context the persistence layer uses.
+    const { encrypt } = await import('../src/crypto/aead');
+    const blob = await encrypt(key, v1, ad);
+
+    // The full decrypt path through decryptDeviceKeys must succeed.
+    const restored = await decryptDeviceKeys(key, blob, ad);
+    expect(restored.pqKemPrivate).toBeNull();
+    expect(restored.pqSigPrivate).toBeNull();
+    expect(restored.ikxPrivate).toEqual(v1.slice(1, 33));
+    expect(restored.spkPrivate).toEqual(v1.slice(33, 65));
+    expect(restored.opkPrivate).toEqual(v1.slice(66, 98));
+  });
+
+  it('still rejects an encrypted blob whose payload has an unknown version', async () => {
+    const key = await deriveKey();
+    const ad = deviceKeysAssociatedData('alice');
+    // Forge a payload with version 7 inside.
+    const bad = new Uint8Array(66);
+    bad[0] = 7;
+    const { encrypt } = await import('../src/crypto/aead');
+    const blob = await encrypt(key, bad, ad);
+    await expect(decryptDeviceKeys(key, blob, ad)).rejects.toThrow(
+      /unsupported device-keys payload version 7/,
+    );
   });
 });
 

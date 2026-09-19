@@ -402,9 +402,12 @@ export function deserializeDeviceKeys(raw: Uint8Array): DeviceKeysPrivate {
     throw new Error('malformed device-keys payload');
   }
   const version = raw[0];
-  if (version !== DEVICE_KEYS_PAYLOAD_VERSION) {
+  // Backward-compatibility: accept both the pre-hybrid v1 layout
+  // (classical-only) and the current v2 layout (classical + PQ).
+  // v1 payloads have no PQ section; pqKem/pqSig are returned as null.
+  if (version !== 1 && version !== DEVICE_KEYS_PAYLOAD_VERSION) {
     throw new Error(
-      `unsupported device-keys payload version ${version}; expected ${DEVICE_KEYS_PAYLOAD_VERSION}`,
+      `unsupported device-keys payload version ${version}; expected 1 or ${DEVICE_KEYS_PAYLOAD_VERSION}`,
     );
   }
   const ikx = raw.slice(1, 1 + X25519_KEY_BYTES);
@@ -423,7 +426,9 @@ export function deserializeDeviceKeys(raw: Uint8Array): DeviceKeysPrivate {
   }
   let pqKemPrivate: Uint8Array | null = null;
   let pqSigPrivate: Uint8Array | null = null;
-  if (raw.length > offset) {
+  // v2 payloads may carry an optional PQ section after the classical block.
+  // v1 payloads never carry a PQ section.
+  if (version === DEVICE_KEYS_PAYLOAD_VERSION && raw.length > offset) {
     const pqFlag = raw[offset] ?? 0;
     if (pqFlag !== 1) {
       throw new Error(`malformed device-keys PQ flag ${pqFlag}`);
