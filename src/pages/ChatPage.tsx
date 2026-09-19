@@ -75,6 +75,9 @@ export function ChatPage(): JSX.Element {
   const [unlockPassphrase, setUnlockPassphrase] = useState('');
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const [unlocking, setUnlocking] = useState(false);
+  const [isMobile, setIsMobile] = useState<boolean>(() => {
+    return typeof window !== 'undefined' && window.innerWidth < 768;
+  });
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Resolve the active ChatController once setup has run.
@@ -107,20 +110,26 @@ export function ChatPage(): JSX.Element {
   // Handle browser back button on mobile: if we're in a conversation and
   // the user goes back, return to conversation list instead of leaving the page.
   useEffect(() => {
-    const handlePopState = () => {
-      if (activePeer !== null) {
-        setActivePeer(null);
-        // Prevent the default back navigation since we're handling it
-        window.history.pushState(null, '', location.pathname);
-      }
+    // Only intercept back when we're in a conversation on mobile.
+    // On desktop, normal browser navigation works fine.
+    const handlePopState = (): void => {
+      // If a conversation is active on mobile, just clear it and re-push
+      // a synthetic state so we stay on /chat.
+      // Use a functional update to read the latest activePeer without
+      // re-binding this effect on every change.
+      setActivePeer((current) => {
+        if (current !== null) {
+          window.history.pushState(null, '', location.pathname);
+          return null;
+        }
+        return current;
+      });
     };
-    // Push a state so we can intercept the back button
-    window.history.pushState(null, '', location.pathname);
     window.addEventListener('popstate', handlePopState);
     return () => {
       window.removeEventListener('popstate', handlePopState);
     };
-  }, [activePeer, location.pathname]);
+  }, [location.pathname]);
 
   // Show unlock prompt when identity is locked and user is authenticated
   useEffect(() => {
@@ -132,6 +141,20 @@ export function ChatPage(): JSX.Element {
       setUnlockError(null);
     }
   }, [authenticated, identity.kind]);
+
+  // Track viewport width for mobile/desktop UI switching.
+  // SSR-safe: only runs in the browser.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const checkMobile = (): void => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => {
+      window.removeEventListener('resize', checkMobile);
+    };
+  }, []);
 
   // ---- Typing indicator (outgoing signal management) -------------------
   const typingStartPeerRef = useRef<string | null>(null);
@@ -379,9 +402,6 @@ export function ChatPage(): JSX.Element {
 
   // Identify / lock state.
   const identityLocked = identity.kind !== 'unlocked';
-
-  // Mobile: determine if we should show the sidebar drawer
-  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
 
   return (
     <div className="page page--full page--chat">
