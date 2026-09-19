@@ -832,6 +832,7 @@ export class ChatController {
         const aliceBundle = await this.fetchInitiatorBundle(env.sender);
         const bobPqKem = mlKem768DerivePublicKey(identity.deviceKeys.pqKemPrivate);
         const bobPqSig = mlDsa44DerivePublicKey(identity.deviceKeys.pqSigPrivate);
+        const bobIkPublic = hexToBytes(identity.publicKeyHex);
         session = await E2EESession.acceptHybrid(
           identity.deviceKeys.spkPrivate,
           identity.deviceKeys.ikxPrivate,
@@ -839,6 +840,7 @@ export class ChatController {
           identity.deviceKeys.opkPrivate === null ? [] : [identity.deviceKeys.opkPrivate],
           bobPqKem,
           bobPqSig,
+          bobIkPublic,
           hexToBytes(aliceBundle.ik_public),
           hexToBytes(aliceBundle.pq_kem_public ?? ''),
           hexToBytes(aliceBundle.pq_sig_public ?? ''),

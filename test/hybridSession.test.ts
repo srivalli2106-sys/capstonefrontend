@@ -33,7 +33,7 @@ import {
   buildHybridBindingContext,
 } from '../src/crypto/deviceKeys';
 import { verifySignedPrekey, signSignedPrekey } from '../src/crypto/deviceKeys';
-import { ed25519PublicBytes, generateEd25519Keypair } from '../src/crypto/ed25519';
+import { generateEd25519Keypair } from '../src/crypto/ed25519';
 import {
   x25519PublicFromPrivate,
   generateX25519Keypair,
@@ -139,7 +139,7 @@ describe('Hybrid session end-to-end (real ML-KEM + ML-DSA)', () => {
     };
     const alicePqKemPub = mlKem768DerivePublicKey(alice.pqKem.privateKey);
     const alicePqSigPub = mlDsa44DerivePublicKey(alice.pqSig.privateKey);
-    const aliceIkPub = ed25519PublicBytes(alice.ikPrivate.publicKey());
+    const aliceIkPub = alice.ikPrivate.publicKey;
 
     const aliceSession = await E2EESession.initiateHybrid(
       alice.ikxPrivate,
@@ -173,6 +173,7 @@ describe('Hybrid session end-to-end (real ML-KEM + ML-DSA)', () => {
       [],
       bobPqKemPub,
       bobPqSigPub,
+      bobBundle.ikPublic,
       aliceIkPub,
       alicePqKemPub,
       alicePqSigPub,

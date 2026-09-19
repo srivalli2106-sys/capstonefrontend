@@ -257,6 +257,7 @@ export class E2EESession {
     bobOpkPrivates: ReadonlyArray<Uint8Array>,
     bobPqKemPublic: Uint8Array,
     bobPqSigPublic: Uint8Array,
+    bobIkPublic: Uint8Array,
     aliceIkPublic: Uint8Array,
     alicePqKemPublic: Uint8Array,
     alicePqSigPublic: Uint8Array,
@@ -264,6 +265,9 @@ export class E2EESession {
     decapsulateFn: (privateKey: Uint8Array, ciphertext: Uint8Array) => Uint8Array,
     options: E2EESessionInitOptions = {},
   ): Promise<E2EESession> {
+    // Kept for API symmetry with initiateHybrid; not used in transcript.
+    void alicePqKemPublic;
+    void alicePqSigPublic;
     const resp = await x3dhRespondHybrid(
       bobSpkPrivate,
       bobIkxPrivate,
@@ -278,22 +282,21 @@ export class E2EESession {
     );
     const parsed = parseInitPayloadV2(initPayload);
     const bobIkxPub = x25519PublicFromPrivate(bobIkxPrivate);
+    const bobSpkPub = x25519PublicFromPrivate(bobSpkPrivate);
     const rootSecret = await hybridRootSecret({
       protocolVersion: PROTOCOL_VERSION_HYBRID,
       aliceIkPub: aliceIkPublic,
       aliceIkxPub: parsed.ikxPublicA,
-      bobIkPub: alicePqSigPublic, // unused (kept for type symmetry)
+      bobIkPub: bobIkPublic,
       bobIkxPub: bobIkxPub,
-      bobSpkPub: bobIkxPub,
-      bobPqKemPublic: alicePqKemPublic,
-      bobPqSigPublic: alicePqSigPublic,
+      bobSpkPub: bobSpkPub,
+      bobPqKemPublic: bobPqKemPublic,
+      bobPqSigPublic: bobPqSigPublic,
       zClassical: resp.sharedSecret,
       zPq: resp.zPq,
     });
-    void rootSecret;
-    // The combined hybrid root feeds the same ratchet init as v1.
     const rkStep = await rootChain(
-      resp.sharedSecret,
+      rootSecret,
       dhX25519(bobSpkPrivate, resp.initiatorEkPublic),
     );
     const ratchet = await DoubleRatchet.create({

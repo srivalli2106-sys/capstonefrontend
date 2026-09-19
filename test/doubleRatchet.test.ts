@@ -405,8 +405,8 @@ describe('DoubleRatchet: deterministic byte vectors (full pinned exchange)', () 
     const bobDevice = { ikxPrivate: IKX_B_PRIV, spkPrivate: SPK_B_PRIV, opkPrivate: OPK_B_PRIV };
     const aliceDevice = { ikxPrivate: IKX_A_PRIV, spkPrivate: block32(229), opkPrivate: null };
     const alicePub = (await import('../src/crypto/ed25519')).publicKeyFromPrivateSeed(AUTH_SEED_A);
-    const bobBundle = buildDevicePublicBundle(AUTH_SEED_B, bobDevice);
-    const aliceBundle = buildDevicePublicBundle(AUTH_SEED_A, aliceDevice);
+    const bobBundle = await buildDevicePublicBundle(AUTH_SEED_B, bobDevice);
+    const aliceBundle = await buildDevicePublicBundle(AUTH_SEED_A, aliceDevice);
 
     const remote: RemotePublicBundle = {
       authIkPublic: alicePub, // intentionally the WRONG auth so we know the ratchet key path is correct

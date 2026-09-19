@@ -68,8 +68,8 @@ const FIXED_DH_NO_OPK =
   '3da2095b601278f896bb6cb929f6e517de16281d3db9e03e5a0aa11d7e9057769' +
   'd3f89214b6f7251e0ae22636fc1ad75fbe8205a644a4349c5512d5914540d018';
 
-function aliceBundle(): { device: DeviceKeysPrivate; ikPubHex: string } {
-  const bundle = buildDevicePublicBundle(AUTH_SEED_A, {
+async function aliceBundle(): Promise<{ device: DeviceKeysPrivate; ikPubHex: string }> {
+  const bundle = await buildDevicePublicBundle(AUTH_SEED_A, {
     ikxPrivate: IKX_A_PRIV,
     spkPrivate: block32(7), // alice's own SPK is unused for initiate/respond
     opkPrivate: null,
@@ -187,7 +187,7 @@ describe('x3dhInitiate (with OPK)', () => {
     const bundle = await remoteBundle();
     const wrongBundle: RemotePublicBundle = {
       ...bundle,
-      authIkPublic: buildDevicePublicBundle(AUTH_SEED_A, aliceBundle().device).ikPublic,
+      authIkPublic: (await buildDevicePublicBundle(AUTH_SEED_A, (await aliceBundle()).device)).ikPublic,
     };
     await expect(x3dhInitiate(IKX_A_PRIV, wrongBundle, { ephemeralPrivateKey: EK_A_PRIV }))
       .rejects.toMatchObject({ code: 'invalid_signature' });
@@ -275,7 +275,8 @@ describe('x3dhRespond', () => {
 
 describe('X3DHSession', () => {
   it('initiator session exposes initPayload + ephemeral', async () => {
-    const init = await X3DHSession.initiate(aliceBundle().device, await remoteBundle(), {
+    const aliceB = await aliceBundle();
+    const init = await X3DHSession.initiate(aliceB.device, await remoteBundle(), {
       ephemeralPrivateKey: EK_A_PRIV,
       peerUserId: 'bob',
     });
@@ -290,7 +291,8 @@ describe('X3DHSession', () => {
   });
 
   it('accept session reproduces the same SK and has no initPayload', async () => {
-    const init = await X3DHSession.initiate(aliceBundle().device, await remoteBundle(), {
+    const aliceB = await aliceBundle();
+    const init = await X3DHSession.initiate(aliceB.device, await remoteBundle(), {
       ephemeralPrivateKey: EK_A_PRIV,
     });
     const accept = await X3DHSession.accept(bobDevice(), init.initPayload!, {
