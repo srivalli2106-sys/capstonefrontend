@@ -17,10 +17,24 @@ import type {
   ChatError,
   ConversationSnapshot,
   DisplayMessage,
+  PresenceState,
   SessionState,
 } from '../realtime/ChatController';
 import { getOrCreateChatController } from '../realtime/ChatController';
 import type { ConnectionState } from '../realtime/types';
+import {
+  formatConversationTimestamp,
+  formatMessageTimestamp,
+  formatMessageTimestampLong,
+} from '../realtime/timeFormat';
+import { filterConversationsBySearch } from '../realtime/chatSearch';
+
+/** Throttle outgoing typing-start frames. */
+const TYPING_START_INTERVAL_MS = 1500;
+/** Stop listening (and emit typing-stop) after this much silence. */
+const TYPING_STOP_AFTER_MS = 2000;
+/** Presence poll cadence. */
+const PRESENCE_POLL_INTERVAL_MS = 30_000;
 
 export function ChatPage(): JSX.Element {
   const { authenticated, userId, identity } = useAuth();
@@ -31,6 +45,7 @@ export function ChatPage(): JSX.Element {
   const [composer, setComposer] = useState('');
   const [sendError, setSendError] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
 
   // Resolve the active ChatController once setup has run.
   const ctrl: ChatController | null = useMemo(() => {
@@ -58,6 +73,107 @@ export function ChatPage(): JSX.Element {
       setActivePeer(first.peerUserId);
     }
   }, [chat.conversations, activePeer]);
+
+  // ---- Typing indicator (outgoing signal management) -------------------
+  const typingStartPeerRef = useRef<string | null>(null);
+  const lastTypingSignalAtRef = useRef(0);
+  const typingInactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearTypingTimer = useCallback(() => {
+    if (typingInactivityTimerRef.current !== null) {
+      clearTimeout(typingInactivityTimerRef.current);
+      typingInactivityTimerRef.current = null;
+    }
+  }, []);
+
+  const stopTypingFor = useCallback(
+    (peer: string) => {
+      if (typingStartPeerRef.current !== peer) return;
+      typingStartPeerRef.current = null;
+      if (ctrl !== null) {
+        ctrl.sendTyping(peer, 'stop');
+      }
+    },
+    [ctrl],
+  );
+
+  // Stop typing signals on conversation switch and on unmount.
+  const prevActivePeerRef = useRef<string | null>(activePeer);
+  useEffect(() => {
+    const prev = prevActivePeerRef.current;
+    prevActivePeerRef.current = activePeer;
+    if (prev !== null && prev !== activePeer) {
+      stopTypingFor(prev);
+    }
+    clearTypingTimer();
+    if (ctrl !== null) {
+      // Drives read receipts for the newly active conversation.
+      ctrl.setActivePeer(activePeer);
+    }
+  }, [activePeer, ctrl, stopTypingFor, clearTypingTimer]);
+
+  useEffect(() => {
+    return () => {
+      clearTypingTimer();
+      if (typingStartPeerRef.current !== null && ctrl !== null) {
+        ctrl.sendTyping(typingStartPeerRef.current, 'stop');
+      }
+      typingStartPeerRef.current = null;
+    };
+  }, [ctrl, clearTypingTimer]);
+
+  // ---- Presence polling (online/offline) -------------------------------
+  useEffect(() => {
+    if (!chat.connected || ctrl === null) return;
+    for (const conversation of chat.conversations) {
+      void ctrl.refreshPresence(conversation.peerUserId);
+    }
+    const interval = window.setInterval(() => {
+      if (ctrl === null) return;
+      for (const conversation of ctrl.getSnapshot().conversations) {
+        void ctrl.refreshPresence(conversation.peerUserId);
+      }
+    }, PRESENCE_POLL_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [chat.connected, ctrl, chat.conversations.length]);
+
+  // ---- Conversation search (client-side, never scans message content) ---
+  const filteredConversations = useMemo(
+    () => filterConversationsBySearch(chat.conversations, searchTerm),
+    [chat.conversations, searchTerm],
+  );
+
+  const handleComposerChange = useCallback(
+    (value: string) => {
+      setComposer(value);
+      const peer = activePeer;
+      if (peer === null || ctrl === null) return;
+      clearTypingTimer();
+      if (value.trim().length === 0) {
+        stopTypingFor(peer);
+        return;
+      }
+      const now = Date.now();
+      if (now - lastTypingSignalAtRef.current > TYPING_START_INTERVAL_MS) {
+        typingStartPeerRef.current = peer;
+        lastTypingSignalAtRef.current = now;
+        ctrl.sendTyping(peer, 'start');
+      }
+      typingInactivityTimerRef.current = setTimeout(() => {
+        stopTypingFor(peer);
+        typingInactivityTimerRef.current = null;
+      }, TYPING_STOP_AFTER_MS);
+    },
+    [activePeer, ctrl, clearTypingTimer, stopTypingFor],
+  );
+
+  const handleDeleteLocally = useCallback(
+    (peerUserId: string, messageId: string) => {
+      if (ctrl === null) return;
+      ctrl.deleteMessageLocally(peerUserId, messageId);
+    },
+    [ctrl],
+  );
 
   const wsState = useWebSocketStateLabel();
 
@@ -89,6 +205,8 @@ export function ChatPage(): JSX.Element {
       const trimmed = composer.trim();
       if (trimmed.length === 0) return;
       setSendError(null);
+      clearTypingTimer();
+      stopTypingFor(activePeer);
       const previous = composer;
       setComposer('');
       try {
@@ -100,7 +218,7 @@ export function ChatPage(): JSX.Element {
         setSendError(safeErrorMessage(err, 'Send failed.'));
       }
     },
-    [activePeer, composer, ctrl],
+    [activePeer, composer, ctrl, clearTypingTimer, stopTypingFor],
   );
 
   const handleCloseConversation = useCallback(() => {
@@ -143,6 +261,18 @@ export function ChatPage(): JSX.Element {
               </span>
             </div>
 
+            <input
+              className="form__input form__input--search"
+              name="conversation_search"
+              type="search"
+              placeholder="Search conversations"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              disabled={chat.conversations.length === 0}
+              aria-label="Search conversations by user id"
+              data-testid="conversation-search"
+            />
+
             <form className="form form--inline" onSubmit={handleOpen}>
               <div className="form__row" style={{ width: '100%' }}>
                 <input
@@ -181,13 +311,15 @@ export function ChatPage(): JSX.Element {
               </div>
             )}
 
-            {chat.conversations.length === 0 ? (
+            {filteredConversations.length === 0 ? (
               <p className="page__lede" style={{ fontSize: 'var(--fs-sm)' }}>
-                No conversations yet. Start one above.
+                {chat.conversations.length === 0
+                  ? 'No conversations yet. Start one above.'
+                  : 'No conversations match your search.'}
               </p>
             ) : (
               <ul className="chat-conversation-list" role="listbox" aria-label="Active conversations">
-                {chat.conversations.map((c) => (
+                {filteredConversations.map((c) => (
                   <li key={c.peerUserId}>
                     <button
                       type="button"
@@ -199,7 +331,26 @@ export function ChatPage(): JSX.Element {
                       data-peer={c.peerUserId}
                       aria-pressed={c.peerUserId === activePeer}
                     >
-                      <span className="chat-conversation__peer">{c.peerUserId}</span>
+                      <span className="chat-conversation__main">
+                        <span className="chat-conversation__peer">{c.peerUserId}</span>
+                        <span className="chat-conversation__meta">
+                          <PresenceDot state={c.presence} />
+                          <span
+                            className="chat-conversation__time"
+                            data-testid="conversation-time"
+                          >
+                            {formatConversationTimestamp(c.lastActivityAt)}
+                          </span>
+                          {c.unreadCount > 0 && (
+                            <span
+                              className="chat-conversation__unread"
+                              data-testid="unread-badge"
+                            >
+                              {c.unreadCount}
+                            </span>
+                          )}
+                        </span>
+                      </span>
                       <SessionBadge state={c.session} />
                     </button>
                   </li>
@@ -224,10 +375,8 @@ export function ChatPage(): JSX.Element {
                 ) : (
                   <>
                     <span className="chat-main__peer">{activePeer}</span>
-                    <span className="chat-main__subtitle">
-                      {activeConversation === null
-                        ? 'Establishing secure session…'
-                        : labelForSession(activeConversation.session)}
+                    <span className="chat-main__subtitle" data-testid="conversation-subtitle">
+                      {formatHeaderSubtitle(activePeer, activeConversation)}
                     </span>
                   </>
                 )}
@@ -286,6 +435,7 @@ export function ChatPage(): JSX.Element {
               conversation={activeConversation}
               selfUserId={userId}
               onRetry={handleRetry}
+              onDelete={handleDeleteLocally}
             />
 
             {activeConversation?.session.kind === 'error' && (
@@ -315,7 +465,7 @@ export function ChatPage(): JSX.Element {
                         : 'Type a message — Enter to send, Shift+Enter for newline'
                 }
                 value={composer}
-                onChange={(e) => setComposer(e.target.value)}
+                onChange={(e) => handleComposerChange(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
@@ -368,10 +518,12 @@ function MessageList({
   conversation,
   selfUserId,
   onRetry,
+  onDelete,
 }: {
   conversation: ConversationSnapshot | null;
   selfUserId: string | null;
   onRetry?: (peerUserId: string, plaintext: string) => void;
+  onDelete?: (peerUserId: string, messageId: string) => void;
 }): JSX.Element {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -402,7 +554,14 @@ function MessageList({
       ) : (
         <ul className="chat-message-list">
           {conversation.messages.map((m) => (
-            <MessageBubble key={m.id} message={m} selfUserId={selfUserId} onRetry={onRetry} />
+            <MessageBubble
+              key={m.id}
+              message={m}
+              selfUserId={selfUserId}
+              peerUserId={conversation.peerUserId}
+              onRetry={onRetry}
+              onDelete={onDelete}
+            />
           ))}
         </ul>
       )}
@@ -413,17 +572,19 @@ function MessageList({
 function MessageBubble({
   message,
   selfUserId,
+  peerUserId,
   onRetry,
+  onDelete,
 }: {
   message: DisplayMessage;
   selfUserId: string | null;
+  peerUserId: string;
   onRetry?: (peerUserId: string, plaintext: string) => void;
+  onDelete?: (peerUserId: string, messageId: string) => void;
 }): JSX.Element {
   const outgoing = message.outgoing || (selfUserId !== null && message.senderUserId === selfUserId);
-  const time = new Date(message.createdAt).toLocaleTimeString(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const time = formatMessageTimestamp(message.createdAt);
+  const fullTime = formatMessageTimestampLong(message.createdAt);
   return (
     <li
       className={'chat-bubble ' + (outgoing ? 'chat-bubble--out' : 'chat-bubble--in')}
@@ -434,16 +595,17 @@ function MessageBubble({
       <div className="chat-bubble__text" data-testid="message-text">
         {message.plaintext}
       </div>
-      <div className="chat-bubble__meta">
-        <span>{time}</span>
+      <div className="chat-bubble__meta" title={fullTime}>
+        <span data-testid="message-time">{time}</span>
         {outgoing && message.status !== null && (
-          <span className="chat-bubble__status" data-testid="message-status">
-            {' · '}
-            {message.status === 'sending' && 'sending…'}
-            {message.status === 'sent' && 'sent'}
+          <span className="chat-bubble__status" data-testid="message-status" data-status={message.status}>
+            {message.status === 'sending' && ' · Sending…'}
+            {message.status === 'sent' && ' · ✓ Sent'}
+            {message.status === 'delivered' && ' · ✓✓ Delivered'}
+            {message.status === 'read' && ' · ✓✓ Read'}
             {message.status === 'failed' && (
               <>
-                <span className="chat-bubble__status--failed">send failed</span>
+                <span className="chat-bubble__status--failed"> · Send failed</span>
                 {onRetry && (
                   <button
                     type="button"
@@ -459,8 +621,48 @@ function MessageBubble({
           </span>
         )}
       </div>
+      {onDelete !== undefined && (
+        <div className="chat-bubble__actions">
+          <button
+            type="button"
+            className="button button--link chat-bubble__delete"
+            onClick={() => onDelete(peerUserId, message.id)}
+            data-testid="delete-locally"
+            title="Deletes this message from this device only — the peer is not notified."
+            aria-label="Delete message locally"
+          >
+            Delete locally
+          </button>
+        </div>
+      )}
     </li>
   );
+}
+
+function PresenceDot({ state }: { state: PresenceState }): JSX.Element {
+  const label =
+    state === 'online' ? 'Online' : state === 'offline' ? 'Offline' : 'Presence unknown';
+  return (
+    <span
+      className={'chat-presence chat-presence--' + state}
+      data-state={state}
+      role="status"
+      aria-label={label}
+      title={label}
+    />
+  );
+}
+
+function formatHeaderSubtitle(
+  peer: string,
+  conversation: ConversationSnapshot | null,
+): string {
+  if (conversation === null) return 'Establishing secure session…';
+  if (conversation.typing) return `${peer} is typing…`;
+  if (conversation.session.kind !== 'ready') return labelForSession(conversation.session);
+  if (conversation.presence === 'online') return 'Online';
+  if (conversation.presence === 'offline') return 'Offline';
+  return 'End-to-end encrypted';
 }
 
 function SessionBadge({ state }: { state: SessionState }): JSX.Element {

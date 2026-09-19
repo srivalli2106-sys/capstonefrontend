@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   IDENTITY_DB_NAME,
+  _closeForTest,
   deleteIdentityRecord,
   getIdentityRecord,
   listIdentityUserIds,
@@ -26,6 +27,10 @@ function uniqueUserId(label: string): string {
 }
 
 async function clearDb(): Promise<void> {
+  // Release the store's cached connection first (it is never closed in
+  // production), so deleteDatabase() can actually complete instead of being
+  // permanently blocked by the open connection.
+  await _closeForTest();
   const dbs = await indexedDB.databases?.();
   if (!dbs) return;
   for (const db of dbs) {
@@ -34,7 +39,6 @@ async function clearDb(): Promise<void> {
         const req = indexedDB.deleteDatabase(db.name!);
         req.onsuccess = () => resolve();
         req.onerror = () => reject(req.error);
-        req.onblocked = () => resolve();
       });
     }
   }
@@ -170,8 +174,9 @@ describe('Ed25519 ↔ backend wire format compatibility', () => {
     // Verifying on the ASCII bytes of the hex string: must fail.
     const sigOverHexString = signRaw(new TextEncoder().encode(nonceHex), privateSeed);
     expect(verifyRaw(sigOverHexString, nonceBytes, publicKey)).toBe(false);
-    // The hex string's first byte ('0' = 0x30) is different from 0xa0.
-    expect(nonceHex.charCodeAt(0)).toBe(0x30);
+    // The hex string's first character is ASCII 'a' (0x61), while the raw
+    // byte it encodes is 0xa0 — the two byte streams differ.
+    expect(nonceHex.charCodeAt(0)).toBe(0x61);
   });
 });
 
@@ -184,9 +189,13 @@ describe('Phase 3 client invariants', () => {
     // Public key MAY appear (it's intentionally persisted). Private seed
     // MUST NOT.
     expect(json).toContain(publicKeyHex.slice(0, 32));
-    // No 64-hex-char span in the JSON should match the entire public key.
-    // (Hard to assert without knowing the seed; the no-plaintext guarantee
-    // is verified above by the AEAD round-trip test.)
-    expect(json).not.toContain(record!.enc_seed.ciphertext_hex.slice(0, 64));
+    // The private seed never appears as a hex span in the persisted JSON.
+    // Unlock with the real passphrase to obtain the exact seed and assert it
+    // is absent in plaintext (it exists only inside the AEAD ciphertexts).
+    const unlocked = await unlockIdentity(userId, 'p4ssphrase');
+    const seedHex = bytesToHex(unlocked.exportRawSeed());
+    unlocked.lock();
+    expect(seedHex).toHaveLength(64);
+    expect(json).not.toContain(seedHex);
   });
 });

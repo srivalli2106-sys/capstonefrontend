@@ -1014,6 +1014,58 @@ ul, ol {
   font-size: var(--fs-xs);
   color: var(--color-text-muted);
 }
+.chat-conversation__main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.chat-conversation__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+}
+.chat-conversation__time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+}
+.chat-conversation__unread {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-accent-contrast);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.chat-presence {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+  background: var(--color-text-muted);
+}
+.chat-presence--online {
+  background: var(--color-success);
+}
+.chat-presence--offline {
+  background: var(--color-text-muted);
+}
+.chat-presence--unknown {
+  background: var(--color-warning);
+}
+.form__input--search {
+  flex-shrink: 0;
+}
 
 .chat-main {
   display: flex;
@@ -1158,6 +1210,27 @@ ul, ol {
 .chat-bubble__status--failed {
   color: var(--color-danger);
   opacity: 1;
+}
+/* Delete-locally action: revealed on hover on pointers, always tappable on
+   touch devices. It is a local-only, peer-invisible action. */
+.chat-bubble__actions {
+  display: flex;
+  justify-content: flex-end;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+  margin-top: calc(var(--space-1) * -1);
+}
+.chat-bubble:hover .chat-bubble__actions,
+.chat-bubble:focus-within .chat-bubble__actions {
+  opacity: 1;
+}
+.chat-bubble__delete {
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+  text-decoration: none;
+}
+.chat-bubble__delete:hover {
+  color: var(--color-danger);
 }
 
 .chat-composer {
@@ -2039,6 +2112,9 @@ ul, ol {
   .chat-composer {
     padding: var(--space-3) var(--space-4);
     gap: var(--space-2);
+  }
+  .chat-bubble__actions {
+    opacity: 1;
   }
   /* Touch-friendly targets on mobile: bump form controls to 44px. */
   .form__input,

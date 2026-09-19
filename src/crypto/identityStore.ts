@@ -177,6 +177,24 @@ export async function setDeviceKeysEnvelope(
 }
 
 /**
+ * Test/dev helper: closes the cached singleton connection (if any) and
+ * resets `dbPromise` to null. Lets tests release the underlying IndexedDB
+ * database so `indexedDB.deleteDatabase()` can complete instead of being
+ * permanently blocked by the open connection. Production behavior is
+ * unchanged — `getDb()` reopens lazily on the next call.
+ */
+export async function _closeForTest(): Promise<void> {
+  if (dbPromise !== null) {
+    try {
+      const db = await dbPromise;
+      db.close();
+    } finally {
+      dbPromise = null;
+    }
+  }
+}
+
+/**
  * Test/dev helper: opens an explicit database. Used to back the IndexedDB
  * polyfill under Vitest with the fake-indexeddb backend. Production callers
  * should NOT use this — the singleton `getDb()` is correct for the browser.

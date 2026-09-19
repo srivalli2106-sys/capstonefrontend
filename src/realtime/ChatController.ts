@@ -30,16 +30,40 @@
  *
  * What this module deliberately does NOT do:
  *   * Persist ratchet state.
- *   * Show "delivered" / "read" indicators (backend does not support them).
  *   * Buffer undelivered outbound messages while disconnected (the UI shows
  *     them as 'failed' and the user retries — matches the backend's actual
  *     behavior; queueing would imply persistence).
+ *   * Send plaintext anything to the transport. Receipts and typing events
+ *     carry only opaque, server-transparent markers (the referenced wire
+ *     message id for receipts, a start/stop flag for typing).
  *   * Build the application chat UI — that lives in `pages/ChatPage.tsx`.
+ *
+ * Messaging UX additions (Phase 12):
+ *   * Delivery/read receipts: after decrypting an inbound text we emit a
+ *     `delivery_receipt` referencing the wire message id; when the peer's
+ *     conversation is active we additionally emit a `read_receipt`. Outbound
+ *     messages exposed in the snapshot carry a `status` that advances
+ *     `sending -> sent -> delivered -> read` ONLY when the corresponding
+ *     receipt was actually observed. Receipts are wired to the message by the
+ *     wire envelope id (`wireId`), kept separate from the local `c-` client
+ *     id used for rendering/retries.
+ *   * Typing indicator: `sendTyping()` emits `typing` control frames on the
+ *     wire; inbound `typing` frames toggle a peer-typing flag on the
+ *     conversation (auto-cleared after a short timeout). Control frames are
+ *     real-time only and never contain message content.
+ *   * Online/offline presence: `refreshPresence()` polls the read-only
+ *     backend `GET /presence/{user_id}` endpoint; the result is cached on the
+ *     conversation (previous value survives while the poll is in flight, so
+ *     presence never flickers between polls).
+ *   * Delete locally: `deleteMessageLocally()` removes a message from the
+ *     current user's in-memory conversation only. It sends nothing to the
+ *     peer and touches no backend state.
  */
 
 import { type HttpRequestOptions } from '../api/http';
 import { ApiError } from '../api/http';
 import { getKeyBundle } from '../api/keys';
+import { getPresence } from '../api/presence';
 import { parseRemoteKeyBundle, KeyBundleError, type RemoteKeyBundle } from '../crypto/keyBundle';
 import {
   E2EESession,
@@ -54,6 +78,7 @@ import {
 } from './WebSocketController';
 import { type InboundEnvelope } from './types';
 import { hexToBytes } from '../crypto/hex';
+import { newMessageId } from './messageId';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -76,8 +101,29 @@ export interface ChatError {
   requestId: string | null;
 }
 
-/** Status of an outbound message — kept minimal & honest. */
-export type OutboundStatus = 'sending' | 'sent' | 'failed';
+/** Status of an outbound message — advances only on observed receipts. */
+export type OutboundStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
+
+/**
+ * Outbound message status precedence. A receipt may only advance a status
+ * forward (`read` implies `delivered` implies `sent`); 'failed' is terminal
+ * for that message id.
+ */
+const OUTBOUND_STATUS_INDEX: Record<OutboundStatus, number> = {
+  sending: 0,
+  sent: 1,
+  delivered: 2,
+  read: 3,
+  failed: -1,
+};
+
+/** Wire payload for typing control frames (start/stop). */
+export const TYPING_START = '1';
+export const TYPING_STOP = '0';
+/** Inbound typing state auto-clears after this long without a new frame. */
+export const TYPING_TIMEOUT_MS = 3000;
+
+export type PresenceState = 'online' | 'offline' | 'unknown';
 
 export interface OutboundMessage {
   /** Stable client id so the UI can correlate retries and renders. */
@@ -92,16 +138,23 @@ export interface OutboundMessage {
 /** Decrypted message that the UI will render. */
 export interface DisplayMessage {
   readonly id: string;
+  /** Wire envelope id (ULID) used to correlate delivery/read receipts.
+   *  For outbound messages this is the id we put on the wire; for inbound
+   *  messages it equals `id` (the peer's wire id). */
+  readonly wireId: string | null;
   readonly senderUserId: string;
   readonly recipientUserId: string;
   readonly plaintext: string;
   readonly createdAt: number; // server-authoritative timestamp when available
   readonly outgoing: boolean;
-  /** Mutable only on outbound messages (`sending` → `sent` / `failed`). */
+  /** Mutable only on outbound messages (`sending` → `sent` → `delivered` → `read` / `failed`). */
   status: OutboundStatus | null;
   /** Mutable only on outbound messages. */
   errorMessage: string | null;
   readonly sessionReady: boolean;
+  /** True once a read receipt for this inbound message has been emitted
+   *  (prevents duplicate read receipts on conversation re-open). */
+  readAckSent: boolean;
 }
 
 export type SessionState =
@@ -116,6 +169,12 @@ export interface ConversationSnapshot {
   messages: DisplayMessage[];
   /** Most recent activity timestamp (epoch ms) — drives the sidebar ordering. */
   lastActivityAt: number;
+  /** Last observed online/offline state ('unknown' until first poll). */
+  presence: PresenceState;
+  /** True while the peer has an active typing indicator. */
+  typing: boolean;
+  /** Unread inbound message count (resets when the conversation is active). */
+  unreadCount: number;
 }
 
 export interface ChatSnapshot {
@@ -183,6 +242,14 @@ interface Conversation {
   initiating: boolean;
   /** True while an outbound send is in progress (prevents double-sends). */
   sending: boolean;
+  /** Cached presence state from the last poll. */
+  presence: PresenceState;
+  /** True while the peer is showing a typing indicator. */
+  peerTyping: boolean;
+  /** Auto-clear timer for the peer typing indicator (null when not typing). */
+  typingTimer: ReturnType<typeof setTimeout> | null;
+  /** Number of inbound messages not yet read (not yet emitted read receipts). */
+  unreadCount: number;
 }
 
 export class ChatController {
@@ -199,6 +266,8 @@ export class ChatController {
   /** Dedup: envelope ids already processed (bounded ring). */
   private readonly receivedMessageIds: Set<string> = new Set();
   private static readonly MAX_RECEIVED_IDS = 2048;
+  /** The conversation the UI currently has open (drives auto read receipts). */
+  private activePeer: string | null = null;
 
   constructor(options: ChatControllerOptions) {
     this.authController = options.authController;
@@ -328,9 +397,14 @@ export class ChatController {
     conv.sending = true;
     const id = newOutboundId();
     this.outboundMessageIds.add(id);
+    // The wire id is generated up-front so delivery/read receipts (which
+    // reference it) can be correlated to this message even before the
+    // transport confirms the send. It never contains the plaintext.
+    const wireId = newMessageId();
     const createdAt = Date.now();
     const outbound: DisplayMessage = {
       id,
+      wireId,
       senderUserId: this.authController.getUserId() ?? '',
       recipientUserId: peerUserId,
       plaintext,
@@ -339,6 +413,7 @@ export class ChatController {
       status: 'sending',
       errorMessage: null,
       sessionReady: true,
+      readAckSent: false,
     };
     conv.messages.push(outbound);
     conv.lastActivityAt = createdAt;
@@ -350,9 +425,12 @@ export class ChatController {
         new Uint8Array(0),
       );
       const data = encodeBase64Url(ciphertext);
-      this.webSocket.sendEnvelope({
+      // sendRaw carries a caller-supplied id so receipts can later address
+      // this exact wire message.
+      this.webSocket.sendRaw({
+        id: wireId,
+        type: 'text',
         recipient: peerUserId,
-        envelopeType: 'text',
         data,
       });
       outbound.status = 'sent';
@@ -382,7 +460,78 @@ export class ChatController {
     if (conv.session !== null) {
       conv.session.wipe();
     }
+    this.cleanupTypingTimer(conv);
+    if (this.activePeer === peerUserId) {
+      this.activePeer = null;
+    }
     this.conversations.delete(peerUserId);
+    this.notify();
+  }
+
+  /**
+   * Mark the given peer as the UI-active conversation. Emits `read_receipt`
+   * envelopes for any inbound messages that have not been acknowledged yet
+   * and resets that conversation's unread counter. Receipt emission is
+   * best-effort (control frames are real-time only).
+   */
+  public setActivePeer(peerUserId: string | null): void {
+    if (this.activePeer === peerUserId) return;
+    this.activePeer = peerUserId;
+    if (peerUserId !== null) {
+      const conv = this.conversations.get(peerUserId);
+      if (conv !== undefined) {
+        this.emitReadReceipts(conv);
+        this.notify();
+      }
+    }
+  }
+
+  /** Read-receipt + unread reset for a conversation (idempotent). */
+  public markConversationRead(peerUserId: string): void {
+    const conv = this.conversations.get(peerUserId);
+    if (conv === undefined) return;
+    this.emitReadReceipts(conv);
+    this.notify();
+  }
+
+  /**
+   * Emit a typing control frame to the peer. 'start'/'stop' are sealed wire
+   * values (never plaintext). Best-effort: the transport may be closed.
+   */
+  public sendTyping(peerUserId: string, state: 'start' | 'stop'): void {
+    this.sendSignal(peerUserId, 'typing', state === 'start' ? TYPING_START : TYPING_STOP);
+  }
+
+  /**
+   * Delete a message from the CURRENT user's local conversation state only.
+   * Sends no wire traffic and touches no backend state — the change is
+   * confined to the in-memory conversation store.
+   */
+  public deleteMessageLocally(peerUserId: string, messageId: string): void {
+    const conv = this.conversations.get(peerUserId);
+    if (conv === undefined) return;
+    const index = conv.messages.findIndex((message) => message.id === messageId);
+    if (index === -1) return;
+    conv.messages.splice(index, 1);
+    this.notify();
+  }
+
+  /**
+   * Poll the peer's online/offline state from the read-only presence
+   * endpoint and cache it on the conversation. Failures degrade to
+   * 'unknown' (presence is non-security state).
+   */
+  public async refreshPresence(peerUserId: string): Promise<void> {
+    const conv = this.conversations.get(peerUserId);
+    if (conv === undefined) return;
+    const token = this.authController.getToken();
+    if (token === null) return;
+    try {
+      const result = await getPresence(peerUserId, { authToken: token });
+      conv.presence = result.data.online ? 'online' : 'offline';
+    } catch {
+      conv.presence = 'unknown';
+    }
     this.notify();
   }
 
@@ -471,10 +620,16 @@ export class ChatController {
       case 'text':
         void this.handleText(env);
         return;
-      case 'file':
       case 'delivery_receipt':
+        this.handleReceipt(env, 'delivered');
+        return;
       case 'read_receipt':
+        this.handleReceipt(env, 'read');
+        return;
       case 'typing':
+        this.handleTyping(env);
+        return;
+      case 'file':
       case 'unknown' as never:
         return;
     }
@@ -482,8 +637,7 @@ export class ChatController {
 
   private async handleSessionInit(env: InboundEnvelope): Promise<void> {
     // Dedup: skip if this envelope was already processed.
-    if (this.receivedMessageIds.has(env.id)) return;
-    this.receivedMessageIds.add(env.id);
+    if (!this.markReceived(env.id)) return;
 
     const identity = this.authController.getUnlockedIdentity();
     if (identity === null || identity.deviceKeys === null) {
@@ -542,8 +696,7 @@ export class ChatController {
   }
 
   private handleSessionAccept(env: InboundEnvelope): void {
-    if (this.receivedMessageIds.has(env.id)) return;
-    this.receivedMessageIds.add(env.id);
+    if (!this.markReceived(env.id)) return;
 
     const conv = this.conversations.get(env.sender);
     if (conv === undefined) return;
@@ -556,15 +709,7 @@ export class ChatController {
 
   private async handleText(env: InboundEnvelope): Promise<void> {
     // Dedup: skip if this envelope was already processed.
-    if (this.receivedMessageIds.has(env.id)) return;
-    this.receivedMessageIds.add(env.id);
-    if (this.receivedMessageIds.size > ChatController.MAX_RECEIVED_IDS) {
-      const ids = Array.from(this.receivedMessageIds);
-      this.receivedMessageIds.clear();
-      for (const id of ids.slice(-ChatController.MAX_RECEIVED_IDS / 2)) {
-        this.receivedMessageIds.add(id);
-      }
-    }
+    if (!this.markReceived(env.id)) return;
 
     const conv = this.ensureConversation(env.sender);
     conv.lastActivityAt = Date.now();
@@ -589,8 +734,10 @@ export class ChatController {
     try {
       const plaintextBytes = await conv.session.decryptMessage(wire, new Uint8Array(0));
       const plaintext = this.textDecoder.decode(plaintextBytes);
+      const beingRead = this.activePeer === env.sender;
       const message: DisplayMessage = {
         id: env.id,
+        wireId: env.id,
         senderUserId: env.sender,
         recipientUserId: env.recipient,
         plaintext,
@@ -599,8 +746,17 @@ export class ChatController {
         status: null,
         errorMessage: null,
         sessionReady: true,
+        readAckSent: beingRead,
       };
       conv.messages.push(message);
+      // Honest receipts: delivery is confirmed only once we have actually
+      // decrypted and stored the message. Control frames are best-effort.
+      this.sendSignal(env.sender, 'delivery_receipt', env.id);
+      if (beingRead) {
+        this.sendSignal(env.sender, 'read_receipt', env.id);
+      } else {
+        conv.unreadCount = (conv.unreadCount ?? 0) + 1;
+      }
     } catch (err) {
       const code =
         err && typeof err === 'object' && 'code' in err
@@ -615,6 +771,105 @@ export class ChatController {
       };
     }
     this.notify();
+  }
+
+  /**
+   * Record an inbound envelope id for dedup, bounding the set so it cannot
+   * grow without limit. Returns false when the id has already been seen.
+   */
+  private markReceived(id: string): boolean {
+    if (this.receivedMessageIds.has(id)) {
+      return false;
+    }
+    this.receivedMessageIds.add(id);
+    if (this.receivedMessageIds.size > ChatController.MAX_RECEIVED_IDS) {
+      const ids = Array.from(this.receivedMessageIds);
+      this.receivedMessageIds.clear();
+      for (const seen of ids.slice(-ChatController.MAX_RECEIVED_IDS / 2)) {
+        this.receivedMessageIds.add(seen);
+      }
+    }
+    return true;
+  }
+
+  /**
+   * A delivery/read receipt references the original wire message id
+   * (opaque to the server). Advance the matching outbound message's status;
+   * statuses only ever move forward.
+   */
+  private handleReceipt(env: InboundEnvelope, status: 'delivered' | 'read'): void {
+    if (!this.markReceived(env.id)) return;
+    const conv = this.conversations.get(env.sender);
+    if (conv === undefined) return;
+    const wireId = env.data;
+    let changed = false;
+    for (const message of conv.messages) {
+      if (!message.outgoing || message.wireId !== wireId) continue;
+      const current = OUTBOUND_STATUS_INDEX[message.status ?? 'failed'];
+      if (current < 1) break; // never claim delivery/read for unsent or failed
+      const next = OUTBOUND_STATUS_INDEX[status];
+      if (next > current) {
+        message.status = status;
+        changed = true;
+      }
+      break;
+    }
+    if (changed) {
+      this.notify();
+    }
+  }
+
+  /** Inbound typing frames toggle the conversation's peer-typing flag. */
+  private handleTyping(env: InboundEnvelope): void {
+    if (!this.markReceived(env.id)) return;
+    const conv = this.ensureConversation(env.sender);
+    conv.lastActivityAt = Date.now();
+    conv.peerTyping = env.data === TYPING_START;
+    this.cleanupTypingTimer(conv);
+    if (conv.peerTyping) {
+      // Auto-clear after a short silence so the indicator cannot get stuck.
+      conv.typingTimer = setTimeout(() => {
+        conv.peerTyping = false;
+        conv.typingTimer = null;
+        this.notify();
+      }, TYPING_TIMEOUT_MS);
+    }
+    this.notify();
+  }
+
+  /**
+   * Emit read receipts for every inbound message that has not yet been
+   * acknowledged and reset the unread counter. Best-effort.
+   */
+  private emitReadReceipts(conv: Conversation): void {
+    for (const message of conv.messages) {
+      if (message.outgoing || message.readAckSent) continue;
+      message.readAckSent = true;
+      this.sendSignal(conv.peerUserId, 'read_receipt', message.id);
+    }
+    if ((conv.unreadCount ?? 0) > 0) {
+      conv.unreadCount = 0;
+    }
+  }
+
+  /** One-way best-effort control frame; never throws. */
+  private sendSignal(
+    recipient: string,
+    envelopeType: 'delivery_receipt' | 'read_receipt' | 'typing',
+    data: string,
+  ): void {
+    try {
+      this.webSocket.sendRaw({ id: newMessageId(), type: envelopeType, recipient, data });
+    } catch {
+      // Control frames are best-effort; the transport may be closed.
+    }
+  }
+
+  private cleanupTypingTimer(conv: Conversation): void {
+    if (conv.typingTimer !== null) {
+      clearTimeout(conv.typingTimer);
+      conv.typingTimer = null;
+    }
   }
 
   private recordSessionError(peerUserId: string, error: ChatError): void {
@@ -639,6 +894,10 @@ export class ChatController {
         lastActivityAt: Date.now(),
         initiating: false,
         sending: false,
+        presence: 'unknown',
+        peerTyping: false,
+        typingTimer: null,
+        unreadCount: 0,
       };
       this.conversations.set(peerUserId, conv);
     }
@@ -647,6 +906,7 @@ export class ChatController {
 
   private clearAllSessions(): void {
     for (const conv of this.conversations.values()) {
+      this.cleanupTypingTimer(conv);
       if (conv.session !== null) {
         try {
           conv.session.wipe();
@@ -658,6 +918,7 @@ export class ChatController {
     this.conversations.clear();
     this.outboundMessageIds.clear();
     this.receivedMessageIds.clear();
+    this.activePeer = null;
   }
 
   private toSnapshot(conv: Conversation): ConversationSnapshot {
@@ -666,6 +927,9 @@ export class ChatController {
       session: conv.sessionState,
       messages: conv.messages.slice(),
       lastActivityAt: conv.lastActivityAt,
+      presence: conv.presence ?? 'unknown',
+      typing: conv.peerTyping === true,
+      unreadCount: conv.unreadCount ?? 0,
     };
   }
 
